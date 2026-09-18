@@ -37,6 +37,13 @@ export async function GET(request: Request) {
   const token = searchParams.get("hub.verify_token");
   const challenge = searchParams.get("hub.challenge");
 
+  logOperation({
+    requestId,
+    operation: "instagram_webhook_verification.received",
+    status: "success",
+    errorCode: `mode_${mode ?? "missing"}_token_${token ? "present" : "missing"}_challenge_${challenge ? "present" : "missing"}`,
+  });
+
   if (isValidVerifyToken(mode, token) && challenge) {
     logOperation({
       requestId,
@@ -76,27 +83,80 @@ export async function POST(request: Request) {
   // spec §52: structured logging — every operation this request performs
   // is tagged with the same requestId, so a log aggregator can group them.
   const requestId = randomUUID();
+  const startedAt = Date.now();
+  let eventCount = 0;
+  let processedCount = 0;
+  let ignoredCount = 0;
+  let failedCount = 0;
+
+  logOperation({
+    requestId,
+    operation: "instagram_webhook.received",
+    status: "success",
+  });
 
   // Signature verification needs the exact raw bytes Meta signed — read as
   // text first, never request.json() (which would re-serialize and break
   // the comparison).
   const rawBody = await request.text();
 
+  logOperation({
+    requestId,
+    operation: "instagram_webhook.body_read",
+    status: "success",
+    errorCode: `bytes_${Buffer.byteLength(rawBody, "utf8")}`,
+  });
+
   if (!isValidWebhookSignature(rawBody, request.headers.get("x-hub-signature-256"))) {
+    logOperation({
+      requestId,
+      operation: "instagram_webhook.signature_validation",
+      status: "failure",
+      errorCode: request.headers.has("x-hub-signature-256")
+        ? "invalid_signature"
+        : "missing_signature",
+      durationMs: Date.now() - startedAt,
+    });
     await logWebhookError("Instagram webhook signature verification failed.");
     return new Response("Invalid signature", { status: 403 });
   }
+
+  logOperation({
+    requestId,
+    operation: "instagram_webhook.signature_validation",
+    status: "success",
+  });
 
   let json: unknown;
   try {
     json = JSON.parse(rawBody);
   } catch {
+    logOperation({
+      requestId,
+      operation: "instagram_webhook.json_parse",
+      status: "failure",
+      errorCode: "invalid_json",
+      durationMs: Date.now() - startedAt,
+    });
     await logWebhookError("Instagram webhook body was not valid JSON.");
     return new Response("OK", { status: 200 });
   }
 
+  logOperation({
+    requestId,
+    operation: "instagram_webhook.json_parse",
+    status: "success",
+  });
+
   const parsed = instagramWebhookPayloadSchema.safeParse(json);
   if (!parsed.success) {
+    logOperation({
+      requestId,
+      operation: "instagram_webhook.schema_validation",
+      status: "failure",
+      errorCode: `issues_${parsed.error.issues.length}`,
+      durationMs: Date.now() - startedAt,
+    });
     await logWebhookError(
       "Instagram webhook payload failed schema validation.",
       parsed.error.issues,
@@ -104,12 +164,36 @@ export async function POST(request: Request) {
     return new Response("OK", { status: 200 });
   }
 
+  eventCount = parsed.data.entry.reduce(
+    (count, entry) => count + (entry.messaging?.length ?? 0),
+    0,
+  );
+  logOperation({
+    requestId,
+    operation: "instagram_webhook.schema_validation",
+    status: "success",
+    errorCode: `entries_${parsed.data.entry.length}_events_${eventCount}`,
+  });
+
   for (const entry of parsed.data.entry) {
     // Account ownership (spec §38/§74): only process events for Instagram
     // accounts we actually have connected and active.
     const instagramAccount = await prisma.instagramAccount.findUnique({
       where: { instagramUserId: entry.id },
       select: { id: true, status: true, userId: true },
+    });
+
+    logOperation({
+      requestId,
+      userId: instagramAccount?.userId,
+      instagramAccountId: instagramAccount?.id,
+      operation: "instagram_webhook.account_lookup",
+      status: instagramAccount ? "success" : "failure",
+      errorCode: instagramAccount
+        ? instagramAccount.status === "ACTIVE"
+          ? "active"
+          : `status_${instagramAccount.status}`
+        : "account_not_found",
     });
 
     for (const item of entry.messaging ?? []) {
@@ -130,18 +214,53 @@ export async function POST(request: Request) {
         ) {
           // Already recorded this exact delivery — Meta redelivers on
           // timeout/non-2xx (spec §28 idempotency).
+          ignoredCount += 1;
+          logOperation({
+            requestId,
+            userId: instagramAccount?.userId,
+            instagramAccountId: instagramAccount?.id,
+            operation: "instagram_webhook.event_record",
+            status: "success",
+            errorCode: "duplicate_event",
+          });
           continue;
         }
+        failedCount += 1;
+        logOperation({
+          requestId,
+          userId: instagramAccount?.userId,
+          instagramAccountId: instagramAccount?.id,
+          operation: "instagram_webhook.event_record",
+          status: "failure",
+          errorCode: "persist_failed",
+        });
         await logWebhookError("Failed to record incoming Instagram webhook event.", {
           externalEventId,
         });
         continue;
       }
 
+      logOperation({
+        requestId,
+        userId: instagramAccount?.userId,
+        instagramAccountId: instagramAccount?.id,
+        operation: "instagram_webhook.event_record",
+        status: "success",
+      });
+
       if (!instagramAccount || instagramAccount.status !== "ACTIVE") {
+        ignoredCount += 1;
         await prisma.webhookEvent.update({
           where: { id: webhookEvent.id },
           data: { status: "IGNORED", processedAt: new Date() },
+        });
+        logOperation({
+          requestId,
+          userId: instagramAccount?.userId,
+          instagramAccountId: instagramAccount?.id,
+          operation: "instagram_webhook.event_process",
+          status: "success",
+          errorCode: !instagramAccount ? "account_not_found" : "account_inactive",
         });
         continue;
       }
@@ -156,6 +275,7 @@ export async function POST(request: Request) {
         instagramAccount.id,
       );
       if (!webhookRateLimit.allowed) {
+        ignoredCount += 1;
         await prisma.webhookEvent.update({
           where: { id: webhookEvent.id },
           data: {
@@ -183,6 +303,14 @@ export async function POST(request: Request) {
         continue;
       }
 
+      logOperation({
+        requestId,
+        userId: instagramAccount.userId,
+        instagramAccountId: instagramAccount.id,
+        operation: "instagram_webhook.rate_limit",
+        status: "success",
+      });
+
       const startedAt = Date.now();
       try {
         const result = await processMessagingItem(instagramAccount.id, item);
@@ -190,6 +318,8 @@ export async function POST(request: Request) {
           where: { id: webhookEvent.id },
           data: { status: "PROCESSED", processedAt: new Date() },
         });
+        if (result.processed) processedCount += 1;
+        else ignoredCount += 1;
         logOperation({
           requestId,
           userId: instagramAccount.userId,
@@ -200,6 +330,7 @@ export async function POST(request: Request) {
           durationMs: Date.now() - startedAt,
         });
       } catch (error) {
+        failedCount += 1;
         const message =
           error instanceof Error ? error.message : "Unknown webhook processing error";
         await prisma.webhookEvent.update({
@@ -221,6 +352,14 @@ export async function POST(request: Request) {
       }
     }
   }
+
+  logOperation({
+    requestId,
+    operation: "instagram_webhook.completed",
+    status: failedCount > 0 ? "failure" : "success",
+    errorCode: `events_${eventCount}_processed_${processedCount}_ignored_${ignoredCount}_failed_${failedCount}`,
+    durationMs: Date.now() - startedAt,
+  });
 
   return new Response("OK", { status: 200 });
 }
