@@ -53,6 +53,10 @@ export async function processMessagingItem(
   instagramAccountId: string,
   item: InstagramWebhookMessagingItem,
 ): Promise<ProcessMessagingItemResult> {
+  if (!item.sender || !item.recipient) {
+    return { processed: false, reason: "unsupported-notification-shape" };
+  }
+
   const isEcho = item.message?.is_echo === true;
   const participantExternalId = isEcho ? item.recipient.id : item.sender.id;
 

@@ -27,6 +27,15 @@ async function logWebhookError(message: string, details?: unknown) {
   });
 }
 
+function getWebhookShape(value: unknown): unknown {
+  if (!value || typeof value !== "object") return typeof value;
+  if (Array.isArray(value)) return { type: "array", length: value.length };
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, getWebhookShape(entry)]),
+  );
+}
+
 // Meta's one-time subscription handshake: echo hub.challenge back as plain
 // text if hub.mode/hub.verify_token check out (spec §38).
 export async function GET(request: Request) {
@@ -159,7 +168,10 @@ export async function POST(request: Request) {
     });
     await logWebhookError(
       "Instagram webhook payload failed schema validation.",
-      parsed.error.issues,
+      {
+        issues: parsed.error.issues,
+        shape: getWebhookShape(json),
+      },
     );
     return new Response("OK", { status: 200 });
   }
@@ -209,6 +221,19 @@ export async function POST(request: Request) {
     });
 
     for (const item of entry.messaging ?? []) {
+      if (!item.sender || !item.recipient) {
+        ignoredCount += 1;
+        logOperation({
+          requestId,
+          userId: instagramAccount?.userId,
+          instagramAccountId: instagramAccount?.id,
+          operation: "instagram_webhook.event_process",
+          status: "success",
+          errorCode: "unsupported_notification_shape",
+        });
+        continue;
+      }
+
       const externalEventId = getMessagingItemEventId(entry.id, item);
 
       let webhookEvent;

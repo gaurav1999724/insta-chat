@@ -28,8 +28,8 @@ export const instagramWebhookMessageSchema = z.object({
 });
 
 export const instagramWebhookMessagingItemSchema = z.object({
-  sender: z.object({ id: z.string() }),
-  recipient: z.object({ id: z.string() }),
+  sender: z.object({ id: z.string() }).optional(),
+  recipient: z.object({ id: z.string() }).optional(),
   timestamp: z.number(),
   message: instagramWebhookMessageSchema.optional(),
 });
@@ -90,5 +90,8 @@ export function getMessagingItemEventId(
   entryId: string,
   item: InstagramWebhookMessagingItem,
 ): string {
-  return item.message?.mid ?? `${entryId}:${item.sender.id}:${item.timestamp}`;
+  return (
+    item.message?.mid ??
+    `${entryId}:${item.sender?.id ?? "unknown"}:${item.timestamp}`
+  );
 }
