@@ -12,6 +12,7 @@ import {
   exchangeCodeForShortLivedToken,
   exchangeForLongLivedToken,
   getProfile,
+  subscribeToMessageWebhooks,
 } from "@/services/instagram/instagram-service";
 
 function redactInstagramDetails(value: unknown): unknown {
@@ -173,6 +174,26 @@ export async function GET(request: Request) {
       operation: "instagram_account_persist",
       status: "success",
     });
+
+    try {
+      await subscribeToMessageWebhooks(longLived.accessToken, profile.id);
+      logOperation({
+        requestId,
+        userId: user.id,
+        instagramAccountId: account.id,
+        operation: "instagram_webhook_subscription",
+        status: "success",
+      });
+    } catch (error) {
+      logOperation({
+        requestId,
+        userId: user.id,
+        instagramAccountId: account.id,
+        operation: "instagram_webhook_subscription",
+        status: "failure",
+        errorCode: error instanceof InstagramApiError ? error.category : "WEBHOOK_ERROR",
+      });
+    }
 
     stage = "audit_log_persist";
     await prisma.auditLog.create({

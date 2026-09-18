@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { env } from "@/lib/validation/env";
 import {
   getMessagingItemEventId,
   instagramWebhookPayloadSchema,
@@ -29,14 +30,44 @@ async function logWebhookError(message: string, details?: unknown) {
 // Meta's one-time subscription handshake: echo hub.challenge back as plain
 // text if hub.mode/hub.verify_token check out (spec §38).
 export async function GET(request: Request) {
+  const requestId = randomUUID();
+  const startedAt = Date.now();
   const { searchParams } = new URL(request.url);
   const mode = searchParams.get("hub.mode");
   const token = searchParams.get("hub.verify_token");
   const challenge = searchParams.get("hub.challenge");
 
   if (isValidVerifyToken(mode, token) && challenge) {
+    logOperation({
+      requestId,
+      operation: "instagram_webhook_verification",
+      status: "success",
+      durationMs: Date.now() - startedAt,
+    });
     return new Response(challenge, { status: 200 });
   }
+
+  const errorCode = !mode
+    ? "missing_mode"
+    : mode !== "subscribe"
+      ? "invalid_mode"
+      : !token
+        ? "missing_verify_token"
+        : !env.META_WEBHOOK_VERIFY_TOKEN
+          ? "server_verify_token_missing"
+          : token !== env.META_WEBHOOK_VERIFY_TOKEN
+            ? "verify_token_mismatch"
+            : !challenge
+              ? "missing_challenge"
+              : "invalid_verification_request";
+
+  logOperation({
+    requestId,
+    operation: "instagram_webhook_verification",
+    status: "failure",
+    errorCode,
+    durationMs: Date.now() - startedAt,
+  });
 
   return new Response("Forbidden", { status: 403 });
 }

@@ -176,6 +176,30 @@ export async function getProfile(accessToken: string): Promise<InstagramProfile>
   };
 }
 
+export async function subscribeToMessageWebhooks(
+  accessToken: string,
+  instagramUserId: string,
+): Promise<void> {
+  const url = new URL(
+    `${GRAPH_HOST}/${env.META_GRAPH_API_VERSION}/${instagramUserId}/subscribed_apps`,
+  );
+  const body = new URLSearchParams({
+    subscribed_fields: "messages",
+    access_token: accessToken,
+  });
+
+  const response = await fetch(url, { method: "POST", body });
+  const json = await response.json().catch(() => null);
+
+  if (!response.ok || json?.success !== true) {
+    throw new InstagramApiError(
+      "Failed to subscribe the Instagram account to message webhooks.",
+      "INSTAGRAM_API_ERROR",
+      json,
+    );
+  }
+}
+
 // spec §22/§59/§37: send a text DM. Callers must check the 24-hour
 // messaging window themselves first (see
 // `src/lib/instagram/send-eligibility.ts`) — this function does not, and

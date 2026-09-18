@@ -16,6 +16,7 @@ const {
   exchangeForLongLivedToken,
   getAuthorizationUrl,
   getProfile,
+  subscribeToMessageWebhooks,
   sendMessage,
 } = await import("@/services/instagram/instagram-service");
 
@@ -146,6 +147,20 @@ describe("fetch-backed Instagram calls", () => {
     fetchMock.mockResolvedValue(jsonResponse(401, { error: "unauthorized" }));
 
     await expect(getProfile("bad-token")).rejects.toThrow(InstagramApiError);
+  });
+
+  it("subscribes the Instagram account to message webhooks", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { success: true }));
+
+    await subscribeToMessageWebhooks("access-token", "instagram-user-1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url.toString()).toBe(
+      "https://graph.instagram.com/v26.0/instagram-user-1/subscribed_apps",
+    );
+    expect(init.method).toBe("POST");
+    expect(init.body.toString()).toContain("subscribed_fields=messages");
+    expect(init.body.toString()).toContain("access_token=access-token");
   });
 
   it("sendMessage posts to the versioned messages endpoint and returns the message id", async () => {
