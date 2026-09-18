@@ -1,0 +1,17 @@
+node_modules
+.next
+out
+build
+coverage
+test-results
+playwright-report
+blob-report
+.git
+.env
+.env.docker
+.env*.local
+*.log
+npm-debug.log*
+.DS_Store
+InstaMate_AI_Master_Prompt.txt
+PROJECT_ANALYSIS.md

@@ -1,0 +1,521 @@
+// Phase 2: full domain schema per InstaMate_AI_Master_Prompt.txt §5-11 and
+// PROJECT_ANALYSIS.md §4. Auth.js adapter models (Account/Session/
+// VerificationToken) are unchanged from Phase 1.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Enums ---
+
+enum InstagramAccountStatus {
+  ACTIVE
+  DISCONNECTED
+  EXPIRED
+  ERROR
+}
+
+enum ConversationStatus {
+  ACTIVE
+  PAUSED
+  HUMAN_TAKEOVER
+  ARCHIVED
+  ERROR
+}
+
+enum SenderType {
+  USER
+  CONTACT
+  AI
+  SYSTEM
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  FILE
+  STORY_REPLY
+  STORY_MENTION
+  SHARE
+  UNSUPPORTED
+}
+
+// spec §13: Hinglish engine — the language the AI is instructed to reply in.
+enum Language {
+  HINGLISH
+  HINDI
+  ENGLISH
+}
+
+enum ResponseLength {
+  SHORT
+  NORMAL
+  DETAILED
+}
+
+enum EmojiLevel {
+  NONE
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum ResponseDelayMode {
+  INSTANT
+  NATURAL
+  CUSTOM
+}
+
+enum AIResponseStatus {
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  REJECTED
+  REGENERATED
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+  RETRYING
+  UNKNOWN
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+enum ErrorCategory {
+  INSTAGRAM_AUTH_ERROR
+  INSTAGRAM_PERMISSION_ERROR
+  INSTAGRAM_API_ERROR
+  WEBHOOK_ERROR
+  GEMINI_ERROR
+  DATABASE_ERROR
+  QUEUE_ERROR
+  VALIDATION_ERROR
+  RATE_LIMIT_ERROR
+  UNKNOWN_ERROR
+}
+
+enum AuditAction {
+  AI_ENABLED
+  AI_DISABLED
+  MODE_CHANGED
+  SETTINGS_CHANGED
+  HUMAN_TAKEOVER_ENABLED
+  HUMAN_TAKEOVER_DISABLED
+  AI_RESPONSE_GENERATED
+  MESSAGE_SENT
+  MESSAGE_FAILED
+  ACCOUNT_CONNECTED
+  ACCOUNT_DISCONNECTED
+  MEMORY_CHANGED
+  CHAT_MODE_CREATED
+  CHAT_MODE_DELETED
+}
+
+// --- Core user + auth ---
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts          Account[]
+  sessions          Session[]
+  instagramAccounts InstagramAccount[]
+  chatModes         ChatMode[]
+  aiConfiguration   AIConfiguration?
+  auditLogs         AuditLog[]
+}
+
+// --- Auth.js (NextAuth) adapter models ---
+// https://authjs.dev/getting-started/adapters/prisma
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// --- Instagram domain ---
+
+model InstagramAccount {
+  id                   String                 @id @default(cuid())
+  userId               String
+  instagramUserId      String                 @unique
+  username             String
+  displayName          String?
+  profilePictureUrl    String?
+  // Ciphertext only — encrypted with ENCRYPTION_KEY, never sent to the client.
+  accessTokenEncrypted String                 @db.Text
+  tokenExpiresAt       DateTime?
+  status               InstagramAccountStatus @default(ACTIVE)
+  metadata             Json?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  participants  InstagramParticipant[]
+  conversations Conversation[]
+
+  @@index([userId])
+}
+
+model InstagramParticipant {
+  id                 String   @id @default(cuid())
+  instagramAccountId String
+  externalUserId     String
+  username           String?
+  displayName        String?
+  profilePictureUrl  String?
+  metadata           Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  instagramAccount InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+  conversations    Conversation[]
+
+  @@unique([instagramAccountId, externalUserId])
+}
+
+model Conversation {
+  id                     String             @id @default(cuid())
+  instagramAccountId     String
+  externalConversationId String
+  participantId          String
+  status                 ConversationStatus @default(ACTIVE)
+  aiEnabled              Boolean            @default(true)
+  humanTakeover          Boolean            @default(false)
+  chatModeId             String?
+  lastMessageAt          DateTime?
+  lastReadAt             DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  instagramAccount InstagramAccount      @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+  participant      InstagramParticipant  @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  chatMode         ChatMode?             @relation("ConversationSelectedMode", fields: [chatModeId], references: [id], onDelete: SetNull)
+  messages         Message[]
+  settings         ConversationSettings?
+  memories         ConversationMemory[]
+  aiResponses      AIResponse[]
+  aiUsages         AIUsage[]
+  summaries        ConversationSummary[]
+
+  @@unique([instagramAccountId, externalConversationId])
+  @@index([participantId])
+  @@index([chatModeId])
+}
+
+model Message {
+  id                 String           @id @default(cuid())
+  conversationId     String
+  externalMessageId  String?          @unique
+  senderType         SenderType
+  direction          MessageDirection
+  messageType        MessageType      @default(TEXT)
+  text               String?          @db.Text
+  attachmentMetadata Json?
+  externalTimestamp  DateTime?
+  createdAt          DateTime         @default(now())
+
+  conversation       Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  delivery           MessageDelivery?
+  triggeredResponses AIResponse[]         @relation("AIResponseTriggerMessage")
+  sentAsResponse     AIResponse?          @relation("AIResponseSentMessage")
+  sourcedMemories    ConversationMemory[] @relation("MemorySourceMessage")
+
+  @@index([conversationId])
+}
+
+// --- Chat modes / personalities ---
+
+model ChatMode {
+  id                      String         @id @default(cuid())
+  // Null for built-in modes (shared across all users); set for a user's custom mode.
+  userId                  String?
+  key                     String
+  name                    String
+  description             String?
+  isBuiltIn               Boolean        @default(false)
+  personalityInstructions String         @db.Text
+  language                Language       @default(HINGLISH)
+  responseLength          ResponseLength @default(SHORT)
+  emojiLevel              EmojiLevel     @default(MEDIUM)
+  examples                Json?
+  restrictions            String?        @db.Text
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+
+  user                     User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversations            Conversation[]    @relation("ConversationSelectedMode")
+  defaultForConfigurations AIConfiguration[] @relation("AIConfigurationDefaultMode")
+
+  @@unique([userId, key])
+}
+
+// --- Settings ---
+
+// Per-conversation overrides. Every field is nullable: null means "inherit
+// the user's AIConfiguration default" (spec §32: "Conversation-level
+// settings override global settings").
+model ConversationSettings {
+  id                 String             @id @default(cuid())
+  conversationId     String             @unique
+  // Contact profile (spec §20) — user-editable, never sent to Instagram.
+  preferredName      String?
+  relationshipLabel  String?
+  // Personal notes (spec §76): private to the user; may be fed to the AI
+  // only if/when a future phase adds an explicit opt-in for that.
+  notes              String?            @db.Text
+  language           Language?
+  responseLength     ResponseLength?
+  emojiLevel         EmojiLevel?
+  autoSend           Boolean?
+  memoryEnabled      Boolean?
+  responseDelayMode  ResponseDelayMode?
+  responseDelayMinMs Int?
+  responseDelayMaxMs Int?
+  maxContextMessages Int?
+  customInstructions String?            @db.Text
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+// Global AI defaults, one per user.
+model AIConfiguration {
+  id                   String            @id @default(cuid())
+  userId               String            @unique
+  defaultChatModeId    String?
+  language             Language          @default(HINGLISH)
+  responseLength       ResponseLength    @default(SHORT)
+  emojiLevel           EmojiLevel        @default(MEDIUM)
+  autoSend             Boolean           @default(false)
+  responseDelayMode    ResponseDelayMode @default(NATURAL)
+  responseDelayMinMs   Int               @default(2000)
+  responseDelayMaxMs   Int               @default(8000)
+  memoryEnabled        Boolean           @default(true)
+  styleMatchingEnabled Boolean           @default(true)
+  maxContextMessages   Int               @default(20)
+  model                String            @default("gemini-flash-latest")
+  temperature          Float             @default(0.9)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultChatMode ChatMode? @relation("AIConfigurationDefaultMode", fields: [defaultChatModeId], references: [id], onDelete: SetNull)
+}
+
+// --- Memory ---
+
+// Long-term durable facts extracted from a conversation (spec §19).
+// Scoped to a single Conversation — never shared across users.
+model ConversationMemory {
+  id              String   @id @default(cuid())
+  conversationId  String
+  category        String
+  key             String
+  value           String   @db.Text
+  confidence      Float    @default(0.5)
+  sourceMessageId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceMessage Message?     @relation("MemorySourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)
+
+  @@unique([conversationId, category, key])
+}
+
+// Context-window management (spec §45/§46): a rolling summary of older
+// messages so the prompt builder sends "recent messages + summary" instead
+// of unbounded history. Regenerated periodically — no scheduled job exists
+// yet (Phase 9), so today a summary is only ever (re)computed inline when
+// GeminiService.generateResponse() has more context than the message limit
+// wants sent as full text.
+model ConversationSummary {
+  id                String   @id @default(cuid())
+  conversationId    String
+  summary           String   @db.Text
+  messageRangeStart DateTime
+  messageRangeEnd   DateTime
+  generatedAt       DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, messageRangeEnd])
+}
+
+// --- AI responses / usage ---
+
+model AIResponse {
+  id                String           @id @default(cuid())
+  conversationId    String
+  triggerMessageId  String?
+  sentMessageId     String?          @unique
+  text              String           @db.Text
+  confidence        Float
+  suggestedFollowUp String?          @db.Text
+  reason            String?          @db.Text
+  status            AIResponseStatus @default(PENDING_APPROVAL)
+  model             String
+  promptTokens      Int?
+  completionTokens  Int?
+  totalTokens       Int?
+  durationMs        Int?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  triggerMessage Message?     @relation("AIResponseTriggerMessage", fields: [triggerMessageId], references: [id], onDelete: SetNull)
+  sentMessage    Message?     @relation("AIResponseSentMessage", fields: [sentMessageId], references: [id], onDelete: SetNull)
+  usage          AIUsage?
+
+  @@index([conversationId])
+}
+
+model AIUsage {
+  id               String   @id @default(cuid())
+  conversationId   String
+  aiResponseId     String?  @unique
+  model            String
+  inputTokens      Int
+  outputTokens     Int
+  totalTokens      Int
+  durationMs       Int
+  estimatedCostUsd Decimal? @db.Decimal(10, 6)
+  createdAt        DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  aiResponse   AIResponse?  @relation(fields: [aiResponseId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId])
+  @@index([createdAt])
+}
+
+// --- Webhooks / delivery ---
+
+// Idempotency (spec §28): externalEventId is unique so a redelivered webhook
+// is never processed twice.
+model WebhookEvent {
+  id              String             @id @default(cuid())
+  source          String             @default("instagram")
+  externalEventId String             @unique
+  payload         Json
+  status          WebhookEventStatus @default(RECEIVED)
+  error           String?            @db.Text
+  processedAt     DateTime?
+  createdAt       DateTime           @default(now())
+}
+
+model MessageDelivery {
+  id            String         @id @default(cuid())
+  messageId     String         @unique
+  status        DeliveryStatus @default(PENDING)
+  attempts      Int            @default(0)
+  lastAttemptAt DateTime?
+  deliveredAt   DateTime?
+  errorCode     String?
+  errorMessage  String?        @db.Text
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+// --- Audit / system / errors ---
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  userId     String?
+  action     AuditAction
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime    @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// Structured error log. References other entities loosely by id (no FK) so
+// error logging never fails because the referenced row was deleted.
+model APIError {
+  id                 String        @id @default(cuid())
+  category           ErrorCategory
+  message            String        @db.Text
+  stack              String?       @db.Text
+  requestId          String?
+  userId             String?
+  instagramAccountId String?
+  conversationId     String?
+  messageId          String?
+  metadata           Json?
+  createdAt          DateTime      @default(now())
+
+  @@index([category])
+  @@index([createdAt])
+}
