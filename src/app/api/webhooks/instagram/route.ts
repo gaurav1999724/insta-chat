@@ -176,6 +176,18 @@ export async function POST(request: Request) {
   });
 
   for (const entry of parsed.data.entry) {
+    const entryEventCount = entry.messaging?.length ?? 0;
+
+    if (entryEventCount === 0) {
+      logOperation({
+        requestId,
+        operation: "instagram_webhook.entry",
+        status: "success",
+        errorCode: `entry_${entry.id}_no_messaging_events`,
+      });
+      continue;
+    }
+
     // Account ownership (spec §38/§74): only process events for Instagram
     // accounts we actually have connected and active.
     const instagramAccount = await prisma.instagramAccount.findUnique({
@@ -191,9 +203,9 @@ export async function POST(request: Request) {
       status: instagramAccount ? "success" : "failure",
       errorCode: instagramAccount
         ? instagramAccount.status === "ACTIVE"
-          ? "active"
-          : `status_${instagramAccount.status}`
-        : "account_not_found",
+          ? `entry_${entry.id}_active`
+          : `entry_${entry.id}_status_${instagramAccount.status}`
+        : `entry_${entry.id}_account_not_found`,
     });
 
     for (const item of entry.messaging ?? []) {

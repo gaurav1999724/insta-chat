@@ -4,9 +4,10 @@ import { revalidatePath } from "next/cache";
 
 import { requireUser } from "@/lib/auth/require-user";
 import { prisma } from "@/lib/db/prisma";
-import { encrypt } from "@/lib/security/encryption";
+import { decrypt, encrypt } from "@/lib/security/encryption";
 import { aiConfigurationFormSchema } from "@/lib/validation/ai-configuration";
 import { chatModeFormSchema, generateChatModeKey } from "@/lib/validation/chat-mode";
+import { subscribeToMessageWebhooks } from "@/services/instagram/instagram-service";
 
 export type ActionResult = { success: true } | { success: false; error: string };
 export type CreateChatModeResult =
@@ -155,4 +156,31 @@ export async function disconnectInstagramAccount(
   revalidatePath("/settings");
   revalidatePath("/dashboard");
   return { success: true };
+}
+
+export async function refreshInstagramWebhookSubscription(
+  accountId: string,
+): Promise<ActionResult> {
+  const user = await requireUser();
+  const account = await prisma.instagramAccount.findFirst({
+    where: { id: accountId, userId: user.id, status: "ACTIVE" },
+    select: { id: true, instagramUserId: true, accessTokenEncrypted: true },
+  });
+
+  if (!account) {
+    return { success: false, error: "Active Instagram account not found" };
+  }
+
+  try {
+    await subscribeToMessageWebhooks(
+      decrypt(account.accessTokenEncrypted),
+      account.instagramUserId,
+    );
+    return { success: true };
+  } catch {
+    return {
+      success: false,
+      error: "Instagram webhook subscription failed. Check the deployment logs.",
+    };
+  }
 }

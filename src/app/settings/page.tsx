@@ -13,7 +13,7 @@ import { AISettingsForm } from "@/components/settings/ai-settings-form";
 import { ChatModeManager } from "@/components/settings/chat-mode-manager";
 import { RecentErrorsPanel } from "@/components/settings/recent-errors";
 import { UsageSummaryPanel } from "@/components/settings/usage-summary";
-import { disconnectInstagramAccount } from "./actions";
+import { disconnectInstagramAccount, refreshInstagramWebhookSubscription } from "./actions";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -157,16 +157,28 @@ export default async function SettingsPage({
                     </p>
                   )}
                 </div>
-                <form
-                  action={async () => {
-                    "use server";
-                    await disconnectInstagramAccount(instagramAccount.id);
-                  }}
-                >
-                  <Button type="submit" variant="outline" size="sm">
-                    Disconnect
-                  </Button>
-                </form>
+                <div className="flex gap-2">
+                  <form
+                    action={async () => {
+                      "use server";
+                      await refreshInstagramWebhookSubscription(instagramAccount.id);
+                    }}
+                  >
+                    <Button type="submit" variant="outline" size="sm">
+                      Refresh webhooks
+                    </Button>
+                  </form>
+                  <form
+                    action={async () => {
+                      "use server";
+                      await disconnectInstagramAccount(instagramAccount.id);
+                    }}
+                  >
+                    <Button type="submit" variant="outline" size="sm">
+                      Disconnect
+                    </Button>
+                  </form>
+                </div>
               </div>
             ) : (
               <div className="flex items-center justify-between gap-4">
