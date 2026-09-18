@@ -71,7 +71,9 @@ export async function exchangeCodeForShortLivedToken(
 
   const response = await fetch(SHORT_LIVED_TOKEN_URL, { method: "POST", body });
   const json = await response.json().catch(() => null);
-  const entry = json?.data?.[0];
+  // Instagram Login returns token fields at the top level. Keep accepting
+  // the older nested shape for compatibility with existing Meta responses.
+  const entry = json?.data?.[0] ?? json;
 
   if (!response.ok || !entry?.access_token || !entry?.user_id) {
     throw new InstagramApiError(
@@ -85,7 +87,11 @@ export async function exchangeCodeForShortLivedToken(
     accessToken: entry.access_token,
     instagramUserId: String(entry.user_id),
     permissions:
-      typeof entry.permissions === "string" ? entry.permissions.split(",") : [],
+      typeof entry.permissions === "string"
+        ? entry.permissions.split(",")
+        : Array.isArray(entry.permissions)
+          ? entry.permissions
+          : [],
   };
 }
 

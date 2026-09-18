@@ -82,6 +82,24 @@ describe("fetch-backed Instagram calls", () => {
     });
   });
 
+  it("accepts Instagram Login's direct token response shape", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        access_token: "short-token",
+        user_id: 12345,
+        permissions: ["instagram_business_basic", "instagram_business_manage_messages"],
+      }),
+    );
+
+    const result = await exchangeCodeForShortLivedToken("auth-code");
+
+    expect(result).toEqual({
+      accessToken: "short-token",
+      instagramUserId: "12345",
+      permissions: ["instagram_business_basic", "instagram_business_manage_messages"],
+    });
+  });
+
   it("exchangeCodeForShortLivedToken throws InstagramApiError when Meta rejects the code", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(400, { error: { message: "invalid code" } }),

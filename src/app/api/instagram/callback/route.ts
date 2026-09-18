@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { randomUUID } from "node:crypto";
-import type { ErrorCategory } from "@prisma/client";
+import type { ErrorCategory, Prisma } from "@prisma/client";
 
 import { requireUser } from "@/lib/auth/require-user";
 import { prisma } from "@/lib/db/prisma";
@@ -13,6 +13,25 @@ import {
   exchangeForLongLivedToken,
   getProfile,
 } from "@/services/instagram/instagram-service";
+
+function redactInstagramDetails(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactInstagramDetails);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        /access_token|client_secret|authorization|code/i.test(key)
+          ? "[REDACTED]"
+          : redactInstagramDetails(entry),
+      ]),
+    );
+  }
+
+  return value;
+}
 
 async function logInstagramError(
   userId: string,
@@ -28,7 +47,11 @@ async function logInstagramError(
       // Round-trip through JSON so only plain, serializable data is stored.
       metadata:
         details !== undefined
-          ? { details: JSON.parse(JSON.stringify(details)) }
+          ? {
+              details: JSON.parse(
+                JSON.stringify(redactInstagramDetails(details)),
+              ) as Prisma.InputJsonValue,
+            }
           : undefined,
     },
   });
