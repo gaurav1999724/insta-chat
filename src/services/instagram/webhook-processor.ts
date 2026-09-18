@@ -2,12 +2,6 @@ import type { MessageType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import type { InstagramWebhookMessagingItem } from "@/lib/instagram/webhook";
-import { getAIResponseQueue, getMemoryExtractionQueue } from "@/lib/queue/queues";
-
-// spec §19: "after a configurable number of messages" — kept as a simple
-// constant rather than a setting, since no UI need for tuning it has come
-// up yet.
-const MEMORY_EXTRACTION_INTERVAL = 10;
 
 function resolveMessageType(item: InstagramWebhookMessagingItem): MessageType {
   const message = item.message;
@@ -83,7 +77,7 @@ export async function processMessagingItem(
     ? (toJsonSafe({ attachments: item.message.attachments }) as object)
     : undefined;
 
-  const { message, conversation, messageCount } = await prisma.$transaction(
+  const { message } = await prisma.$transaction(
     async (tx) => {
       const participant = await tx.instagramParticipant.upsert({
         where: {
@@ -142,23 +136,6 @@ export async function processMessagingItem(
       };
     },
   );
-
-  // Automatic processing (spec §89 Phase 9), outside the DB transaction
-  // since these are Redis calls, not Postgres ones. A no-op when
-  // REDIS_URL isn't configured (getAIResponseQueue()/getMemoryExtractionQueue()
-  // return null) — message persistence above already succeeded either way.
-  if (
-    !isEcho &&
-    conversation.aiEnabled &&
-    !conversation.humanTakeover &&
-    conversation.status === "ACTIVE"
-  ) {
-    await getAIResponseQueue()?.add("generate", { conversationId: conversation.id });
-  }
-
-  if (!isEcho && messageCount > 0 && messageCount % MEMORY_EXTRACTION_INTERVAL === 0) {
-    await getMemoryExtractionQueue()?.add("analyze", { conversationId: conversation.id });
-  }
 
   return { processed: true, messageId: message.id };
 }

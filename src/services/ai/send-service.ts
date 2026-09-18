@@ -14,9 +14,7 @@ import { sendMessage } from "@/services/instagram/instagram-service";
 // Thrown for both "we chose not to attempt this" (not approved, window
 // closed) and "the API call failed" cases. Callers decide what to do with
 // it: manual server actions catch it and return a friendly
-// `{ success: false }` result; the automatic `instagram-send` queue worker
-// lets it propagate so BullMQ registers the job as failed and retries per
-// its configured backoff (spec §29).
+// `{ success: false }` result.
 export class SendMessageError extends Error {}
 
 type ConversationWithAccount = Conversation & {
@@ -87,8 +85,8 @@ export async function sendApprovedDraft(
   await assertSendEligible(conversation);
 
   // Tracked before the network call so a failure still leaves a row (spec
-  // §60 — never silently lose a send attempt), and so a BullMQ retry of
-  // this exact job (spec §29: "jobs must be idempotent") reuses the same
+  // §60 — never silently lose a send attempt), and so a repeated attempt
+  // reuses the same
   // row instead of creating a duplicate outbound message. There's no real
   // Meta message id yet, so a placeholder keyed on the AIResponse id fills
   // the unique `externalMessageId` slot until (if) the send succeeds.

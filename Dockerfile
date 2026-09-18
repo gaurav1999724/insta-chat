@@ -1,4 +1,4 @@
-# spec §71: Dockerfile + docker-compose.yml (app, postgres, redis).
+# spec §71: Dockerfile + docker-compose.yml (app, postgres).
 #
 # Multi-stage build producing a small runtime image via Next.js's
 # `output: "standalone"` (next.config.ts) — the standalone build traces

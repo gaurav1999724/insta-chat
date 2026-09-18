@@ -1,7 +1,6 @@
 # Webhooks
 
-Status: **Phase 5 implemented** (Instagram messaging webhook), **automatic
-processing added Phase 9** (see `docs/QUEUES.md`). Verified against Meta's
+Status: **Phase 5 implemented** (Instagram messaging webhook). Verified against Meta's
 current Messenger/Instagram Platform webhook docs on 2026-09-17 (spec
 §92); sources linked below.
 
@@ -84,19 +83,12 @@ Reference: [Instagram Platform Webhooks](https://developers.facebook.com/docs/in
    the existing message's `text` (best-effort — a no-op if we never saw the
    original) rather than creating a new row.
 
-**Automatic processing (implemented Phase 9):** right after a non-echo
-message is persisted, if the conversation is AI-eligible (enabled, no
-human takeover, both the conversation and the `InstagramAccount` are
-`ACTIVE`), an `ai-response` job is enqueued; every 10th message also
-enqueues a `memory-extraction` job. Both are no-ops when `REDIS_URL` isn't
-configured. See `docs/QUEUES.md` for the full pipeline (generation →
-auto-send eligibility → sending).
+**Automatic processing:** inbound messages are persisted synchronously.
+Use the manual conversation actions for AI generation, memory analysis, and
+sending.
 
 Still not implemented: outbound historical sync via
-`GET /{ig-user-id}/conversations` + `GET /{conversation-id}/messages`, and
-the `instagram-webhook` BullMQ queue from spec §29 (this handler stays
-synchronous — see `docs/QUEUES.md` for why that's a deliberate choice, not
-a gap).
+`GET /{ig-user-id}/conversations` + `GET /{conversation-id}/messages`.
 
 ## Local testing without a public URL
 

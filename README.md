@@ -8,11 +8,10 @@ and architecture: `PROJECT_ANALYSIS.md`.
 ## Stack
 
 Next.js 15 (App Router, TypeScript strict) · Tailwind CSS v3 + shadcn/ui ·
-PostgreSQL + Prisma · Auth.js v5 · Zod · Redis + BullMQ · Google Gemini.
+PostgreSQL + Prisma · Auth.js v5 · Zod · Google Gemini.
 
-> Tailwind v3 (not v4), Next.js 15 (not 16), and `ioredis` `^5` (not the
-> Node-20-only `^6`) are pinned because this environment runs Node
-> 18.20.8 — see `PROJECT_ANALYSIS.md` §10.
+> Tailwind v3 (not v4) and Next.js 15 (not 16) are pinned because this
+> environment runs Node 18.20.8 — see `PROJECT_ANALYSIS.md` §10.
 
 ## Getting started
 
@@ -27,14 +26,9 @@ PostgreSQL + Prisma · Auth.js v5 · Zod · Redis + BullMQ · Google Gemini.
    conversation (no real Instagram data)
 5. `npm run dev` — http://localhost:3000
 
-With no `EMAIL_SERVER` configured, signing in prints the magic-link URL to
-the terminal instead of emailing it. With no `REDIS_URL` configured,
-automatic AI processing (auto-response, auto-send, scheduled memory
-extraction — see `docs/QUEUES.md`) is disabled but nothing breaks: the
-manual "AI Generate"/"Analyze conversation"/"Send" buttons in
-`/conversations` still work. Background workers start automatically
-in-process (via `src/instrumentation.ts`) when `REDIS_URL` is set — no
-separate worker process to run.
+Automatic background processing is intentionally disabled. The manual
+"AI Generate"/"Analyze conversation"/"Send" buttons in `/conversations`
+continue to work, and rate limiting uses a simple in-memory counter.
 
 ## Scripts
 
@@ -48,7 +42,7 @@ separate worker process to run.
 
 ```bash
 cp .env.docker.example .env.docker   # fill in real values
-docker compose --env-file .env.docker up -d postgres redis
+docker compose --env-file .env.docker up -d postgres
 npm run prisma:migrate:deploy        # from the host, against the exposed port
 docker compose --env-file .env.docker up --build app
 ```
@@ -60,6 +54,6 @@ migrations run from the host rather than inside the container:
 ## Docs
 
 See `docs/` for setup guides (Instagram, Gemini, database, webhooks,
-queues, security, deployment, testing) and `SECURITY_REVIEW.md` for the
+security, deployment, testing) and `SECURITY_REVIEW.md` for the
 final security review (spec §87). `PROJECT_ANALYSIS.md` is the current
 source of truth for implementation status.

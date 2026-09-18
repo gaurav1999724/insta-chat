@@ -26,10 +26,8 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], storageState: STORAGE_STATE_PATH },
     },
   ],
-  // No `webServer` block: this repo's dev server needs REDIS_URL unset
-  // (BullMQ needs Redis >= 6.2; the bundled dev Redis is 3.2 — see
-  // PROJECT_ANALYSIS.md) so `full-flow.spec.ts` exercises the manual
-  // Generate/Approve/Send buttons instead of the automatic queue pipeline.
-  // Start `npm run dev` yourself (with REDIS_URL unset) before
+  // No `webServer` block: this repo's dev server is started separately so
+  // `full-flow.spec.ts` exercises the manual Generate/Approve/Send buttons.
+  // Start `npm run dev` yourself before
   // `npm run test:e2e`.
 });

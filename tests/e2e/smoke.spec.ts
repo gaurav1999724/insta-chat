@@ -3,9 +3,8 @@ import { expect, test } from "@playwright/test";
 // These two pages render for a signed-out visitor with no database query
 // that can fail — the only pages this dev environment (no reachable
 // Postgres, see PROJECT_ANALYSIS.md §10) can exercise against a real
-// running app today. Run with: `npm run dev` (REDIS_URL unset, so the
-// BullMQ workers — incompatible with this environment's old bundled Redis
-// — don't start), then `npm run test:e2e` in another terminal.
+// running app today. Run with: `npm run dev`, then `npm run test:e2e` in
+// another terminal.
 
 test("landing page renders and links to sign-in when signed out", async ({ page }) => {
   await page.goto("/");

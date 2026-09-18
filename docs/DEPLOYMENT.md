@@ -18,17 +18,14 @@ gap in this project has carried since Phase 2.
 
 ## Docker Compose (recommended for self-hosting)
 
-Three services: `app` (this Next.js app), `postgres` (16-alpine),
-`redis` (7-alpine — a real, current Redis; **not** whatever Redis happens
-to be on your machine already, if it's old — BullMQ refuses anything below
-5.0.0, see `docs/QUEUES.md`).
+Two services: `app` (this Next.js app) and `postgres` (16-alpine).
 
 ```bash
 cp .env.docker.example .env.docker
 # edit .env.docker: set POSTGRES_PASSWORD, NEXTAUTH_SECRET, ENCRYPTION_KEY
 # at minimum (see .env.docker.example's comments for how to generate each)
 
-docker compose --env-file .env.docker up -d postgres redis
+docker compose --env-file .env.docker up -d postgres
 
 # Migrations and seeding run from the HOST, not inside the `app` container
 # — the production image (see Dockerfile) is Next.js's minimal standalone
@@ -70,17 +67,15 @@ single-instance deployment.
 docker compose --env-file .env.docker up --build app
 ```
 
-`postgres`/`redis` don't need rebuilding — only `app` changes between
-releases of this codebase.
+`postgres` doesn't need rebuilding — only `app` changes between releases
+of this codebase.
 
 ### Local development without Docker
 
 Everything above is for deploying/self-hosting. For day-to-day development,
 `npm run dev` against a locally-installed Postgres (see `docs/DATABASE.md`)
-is still the normal path — Docker Compose's `postgres`/`redis` services are
-equally usable for that, though: `docker compose up -d postgres redis`,
-point your regular `.env`'s `DATABASE_URL`/`REDIS_URL` at the exposed
-ports, then `npm run dev` as usual.
+is still the normal path. Docker Compose's `postgres` service is equally
+usable: `docker compose up -d postgres`, then run `npm run dev` as usual.
 
 ## Environment variables (production)
 
@@ -94,7 +89,6 @@ Same variables as `.env.example`, with production-specific notes:
 | `EMAIL_SERVER` / `EMAIL_FROM`                                   | Must both be set in production — leaving `EMAIL_SERVER` unset makes sign-in links print to the server's stdout/logs instead of emailing them, which is a deliberate **local-dev-only** fallback (`src/lib/auth/auth.ts`), not something acceptable once real users exist.                       |
 | `META_APP_ID` / `META_APP_SECRET` / `META_WEBHOOK_VERIFY_TOKEN` | From your Meta developer app — see `docs/INSTAGRAM_SETUP.md`. The webhook needs a real public HTTPS URL to register with Meta (this dev environment has never had one — see `PROJECT_ANALYSIS.md` §10).                                                                                         |
 | `GEMINI_API_KEY`                                                | A real key with billing configured — see `docs/GEMINI_SETUP.md` for cost estimates.                                                                                                                                                                                                             |
-| `REDIS_URL`                                                     | A real, reachable Redis ≥5.0.0 (Compose's `redis` service, or any managed Redis). Optional in the sense that the app still runs without it (manual buttons only, spec-compliant degrade), but automatic AI response/auto-send/memory-extraction (Phase 9) needs it.                             |
 | `ENCRYPTION_KEY`                                                | 32+ random characters (`openssl rand -base64 32`), used to encrypt stored Instagram access tokens (spec §49). Losing this key makes every already-connected Instagram account's stored token permanently undecryptable — back it up as carefully as the database itself.                        |
 
 **Never commit `.env` or `.env.docker` with real values** — both are

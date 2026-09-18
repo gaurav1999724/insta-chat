@@ -31,8 +31,6 @@ const envSchema = z.object({
   // before assuming this is still current.
   GEMINI_MODEL: z.string().default("gemini-flash-latest"),
 
-  REDIS_URL: z.string().optional(),
-
   ENCRYPTION_KEY: z.string().min(32, "ENCRYPTION_KEY must be at least 32 characters"),
 });
 

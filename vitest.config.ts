@@ -28,8 +28,7 @@ export default defineConfig({
     // (required transitively by half this codebase) never throws in tests
     // — never real secrets, per spec §66 "never use real credentials in
     // automated tests." Individual tests override/mock further as needed
-    // (e.g. rate-limit tests mock `getRedisConnection` directly rather
-    // than relying on a real `REDIS_URL` here).
+    // Tests use dummy values and never real credentials.
     env: {
       DATABASE_URL: "postgresql://test:test@localhost:5432/test",
       NEXTAUTH_SECRET: "test-secret-not-real-0123456789",

@@ -10,13 +10,6 @@ const { prismaMock } = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/db/prisma", () => ({ prisma: prismaMock }));
 
-const { getAIResponseQueue, getMemoryExtractionQueue } = vi.hoisted(() => ({
-  getAIResponseQueue: vi.fn(),
-  getMemoryExtractionQueue: vi.fn(),
-}));
-vi.mock("@/lib/queue/queues", () => ({ getAIResponseQueue, getMemoryExtractionQueue }));
-
-// Imported after the mocks above so `processMessagingItem` picks them up.
 const { processMessagingItem } = await import("@/services/instagram/webhook-processor");
 
 type TxOverrides = {
@@ -57,11 +50,9 @@ const baseItem = (overrides: Partial<InstagramWebhookMessagingItem> = {}) =>
 describe("processMessagingItem", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getAIResponseQueue.mockReturnValue({ add: vi.fn() });
-    getMemoryExtractionQueue.mockReturnValue({ add: vi.fn() });
   });
 
-  it("persists an inbound text message and enqueues AI generation when eligible", async () => {
+  it("persists an inbound text message", async () => {
     const tx = stubTransaction();
 
     const result = await processMessagingItem("account-1", baseItem());
@@ -78,58 +69,6 @@ describe("processMessagingItem", () => {
         }),
       }),
     );
-    expect(getAIResponseQueue().add).toHaveBeenCalledWith("generate", {
-      conversationId: "conversation-1",
-    });
-  });
-
-  it("does not enqueue AI generation for an echo (our own outbound) message", async () => {
-    stubTransaction();
-
-    await processMessagingItem(
-      "account-1",
-      baseItem({ message: { mid: "mid.2", text: "Sent from the app", is_echo: true } }),
-    );
-
-    expect(getAIResponseQueue().add).not.toHaveBeenCalled();
-  });
-
-  it("does not enqueue AI generation when the conversation has AI disabled", async () => {
-    stubTransaction({
-      conversation: { aiEnabled: false, humanTakeover: false, status: "ACTIVE" },
-    });
-
-    await processMessagingItem("account-1", baseItem());
-
-    expect(getAIResponseQueue().add).not.toHaveBeenCalled();
-  });
-
-  it("does not enqueue AI generation during human takeover", async () => {
-    stubTransaction({
-      conversation: { aiEnabled: true, humanTakeover: true, status: "ACTIVE" },
-    });
-
-    await processMessagingItem("account-1", baseItem());
-
-    expect(getAIResponseQueue().add).not.toHaveBeenCalled();
-  });
-
-  it("enqueues memory extraction every 10th message", async () => {
-    stubTransaction({ messageCount: 10 });
-
-    await processMessagingItem("account-1", baseItem());
-
-    expect(getMemoryExtractionQueue().add).toHaveBeenCalledWith("analyze", {
-      conversationId: "conversation-1",
-    });
-  });
-
-  it("does not enqueue memory extraction on a non-multiple-of-10 message count", async () => {
-    stubTransaction({ messageCount: 7 });
-
-    await processMessagingItem("account-1", baseItem());
-
-    expect(getMemoryExtractionQueue().add).not.toHaveBeenCalled();
   });
 
   it("resolves an image attachment to messageType IMAGE", async () => {
@@ -178,14 +117,4 @@ describe("processMessagingItem", () => {
     expect(result).toEqual({ processed: false, reason: "deleted-message-not-found" });
   });
 
-  it("does not enqueue anything when Redis isn't configured (queues return null)", async () => {
-    getAIResponseQueue.mockReturnValue(null);
-    getMemoryExtractionQueue.mockReturnValue(null);
-    stubTransaction({ messageCount: 10 });
-
-    await expect(processMessagingItem("account-1", baseItem())).resolves.toEqual({
-      processed: true,
-      messageId: "message-1",
-    });
-  });
 });
