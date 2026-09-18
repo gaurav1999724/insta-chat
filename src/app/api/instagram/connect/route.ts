@@ -1,4 +1,4 @@
-import crypto from "node:crypto";
+import crypto, { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { requireUser } from "@/lib/auth/require-user";
@@ -9,11 +9,14 @@ import {
   settingsRedirect,
 } from "@/lib/instagram/oauth";
 import { checkRateLimit } from "@/lib/security/rate-limit";
+import { logOperation } from "@/lib/logging/logger";
 import { getAuthorizationUrl } from "@/services/instagram/instagram-service";
 
 // Plain browser navigation (an <a href> in Settings), not a fetch/mutation —
 // GET is the correct method for a redirect the user's browser follows.
 export async function GET() {
+  const requestId = randomUUID();
+  const startedAt = Date.now();
   const user = await requireUser();
 
   // spec §50: rate limit this API endpoint. Keyed by userId (this route
@@ -22,6 +25,14 @@ export async function GET() {
   // configured reverse proxy in front of this app.
   const rateLimit = await checkRateLimit("INSTAGRAM_CONNECT", user.id);
   if (!rateLimit.allowed) {
+    logOperation({
+      requestId,
+      userId: user.id,
+      operation: "instagram_connect",
+      status: "failure",
+      errorCode: "rate_limited",
+      durationMs: Date.now() - startedAt,
+    });
     return settingsRedirect("rate_limited");
   }
 
@@ -33,11 +44,34 @@ export async function GET() {
       state,
       instagramOAuthStateCookieOptions,
     );
+    logOperation({
+      requestId,
+      userId: user.id,
+      operation: "instagram_connect",
+      status: "success",
+      durationMs: Date.now() - startedAt,
+    });
     return response;
   } catch (error) {
     if (error instanceof InstagramApiError) {
+      logOperation({
+        requestId,
+        userId: user.id,
+        operation: "instagram_connect",
+        status: "failure",
+        errorCode: "not_configured",
+        durationMs: Date.now() - startedAt,
+      });
       return settingsRedirect("not_configured");
     }
+    logOperation({
+      requestId,
+      userId: user.id,
+      operation: "instagram_connect",
+      status: "failure",
+      errorCode: "unexpected_error",
+      durationMs: Date.now() - startedAt,
+    });
     throw error;
   }
 }
