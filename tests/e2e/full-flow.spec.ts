@@ -5,22 +5,48 @@ import { expect, test } from "@playwright/test";
 // receive message → generate AI reply → review reply → edit reply → send
 // reply → disable AI → human takeover.
 //
-// Runs against the real dev server, the real seeded Neon Postgres, and the
-// real Gemini API (verified working — see PROJECT_ANALYSIS.md). Login is
-// scripted via `global-setup.ts` (a real `Session` row, not a mock). The
-// one step this can't fully verify is the actual Instagram send: the
-// seeded Instagram account/participant IDs aren't a real connected
-// account, so Meta's Graph API will legitimately reject the send — that's
-// still a real call to a real endpoint, exercising the full pipeline up to
-// Meta's boundary, so the assertion accepts either outcome rather than
-// assuming success.
+// Runs against a real seeded Neon Postgres and the real Gemini API — no
+// mocks. Login is scripted via `global-setup.ts` (a real `Session` row).
+// Verified reaching step 9 (a real Gemini-generated draft, reviewed and
+// edited) in a clean single-session run; steps 10-12 (approve/send/
+// disable/takeover) are written and exercise real code paths but have not
+// yet been confirmed reliably green — see the two environment findings
+// below before assuming a failure here is an app bug.
 //
-// Requires `npm run dev` (REDIS_URL unset) running against a seeded
-// DATABASE_URL before `npm run test:e2e`.
+// Two real findings from getting this far, both environment-level, not
+// app bugs:
+//   1. Must run against a **production build** (`npm run build` +
+//      `node .next/standalone/server.js`, with `public`/`.next/static`/
+//      `.env` copied alongside it per the Dockerfile), not `next dev
+//      --turbopack`. In dev mode, real Gemini calls from inside a
+//      Turbopack-served request consistently returned 503 "high demand"
+//      even with retries (`callGemini`'s retry-on-ServerError logic),
+//      while the identical call succeeded instantly every time when run
+//      as a standalone script — narrowed to something in Turbopack dev's
+//      request handling, not this app's Gemini integration (which is
+//      independently verified working — see PROJECT_ANALYSIS.md).
+//   2. The production server's `PORT` must match `NEXTAUTH_URL` exactly
+//      (Auth.js's `UntrustedHost` protection is lenient in dev but strict
+//      in production) — run it on the same port `NEXTAUTH_URL` names.
+// The one step this can't fully verify even in principle: the actual
+// Instagram send. The seeded Instagram account/participant IDs aren't a
+// real connected account, so Meta's Graph API will legitimately reject
+// the send — that's still a real call to a real endpoint, exercising the
+// full pipeline up to Meta's boundary, so the assertion accepts either
+// outcome rather than assuming success.
+//
+// This machine also had multiple concurrent Claude Code sessions running
+// their own dev/prod servers against the same project directory during
+// development of this test, which caused real, reproducible instability
+// unrelated to the app (a shared `.next` Turbopack cache corrupting under
+// concurrent writes, and — suspected but not confirmed — session/host
+// validation occasionally flaking under the resulting resource
+// contention). Run this in isolation for a trustworthy result.
 test.describe("full conversation lifecycle", () => {
   test("login, connect, converse, and hand off to a human — spec §68", async ({
     page,
   }) => {
+    page.on("pageerror", (err) => console.log("[pageerror]", err.message));
     // 1. Login — storageState from global-setup.ts already carries a real
     // session cookie for the seeded demo user.
     await page.goto("/dashboard");
@@ -90,19 +116,4 @@ test.describe("full conversation lifecycle", () => {
     await takeoverSwitch.click();
     await expect(takeoverSwitch).toBeChecked();
   });
-});
-
-test("DEBUG approve error", async ({ page }) => {
-  page.on("pageerror", (err) => console.log("[pageerror]", err.message, err.stack));
-  page.on("console", (msg) => { if (msg.type() === "error") console.log("[console.error]", msg.text()); });
-  await page.goto("/conversations");
-  const href = await page.locator('a[href^="/conversations/"]').first().getAttribute("href");
-  await page.goto(href!);
-  const aiSwitch = page.locator("#ai-enabled");
-  if (!(await aiSwitch.isChecked())) await aiSwitch.click();
-  await page.getByRole("button", { name: "AI Generate" }).click();
-  await page.getByText(/AI suggested reply/).waitFor({ timeout: 25000 });
-  await page.getByRole("button", { name: "Approve" }).click();
-  await page.waitForTimeout(3000);
-  console.log("BODY:", (await page.textContent("body"))?.slice(0, 300));
 });

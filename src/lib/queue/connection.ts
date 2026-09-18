@@ -14,6 +14,7 @@ export function getRedisConnection(): IORedis | null {
 
   connection ??= new IORedis(env.REDIS_URL, {
     maxRetriesPerRequest: null, // required by BullMQ
+    enableReadyCheck: false, // managed Redis ACLs may forbid the INFO command
   });
 
   return connection;

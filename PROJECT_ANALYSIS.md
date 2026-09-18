@@ -1,7 +1,77 @@
 # PROJECT_ANALYSIS.md
 
-Status: **Phase 14 complete — all 14 planned phases implemented.** This
+Status: **Phase 14 complete — all 14 planned phases implemented — and
+subsequently verified against real infrastructure (2026-09-18).** This
 document is updated at the end of each phase.
+
+## 0. Real-infrastructure verification (2026-09-18, post-Phase-14)
+
+Everything in §10 below describing this project as **untested against
+real Postgres/Meta/Gemini is now out of date**. It's kept as-is (rather
+than rewritten line-by-line) because it's an accurate record of what was
+true through Phase 14; this section is the update. Left standing: the
+`.env` in this repo now holds real credentials for all three services.
+
+- **Postgres (Neon):** `prisma migrate status`/`migrate dev` run clean
+  against the real `DATABASE_URL`; 3 pre-existing migrations plus 2 new
+  ones from this pass (see below) all applied. Seed data queried directly
+  and confirmed present (1 user, 1 Instagram account, 1 conversation, 3
+  messages).
+- **Gemini API:** the real `GEMINI_API_KEY` works — confirmed with a live
+  `generateContent` call. Found and fixed **two real bugs** in the
+  process: `.env`'s `GEMINI_MODEL` was `gemini-2.0-flash`, a retired model
+  (404); separately, `AIConfiguration.model` in `prisma/schema.prisma` had
+  its own hardcoded `@default("gemini-2.0-flash")`, which silently
+  overrode `env.ts`'s `GEMINI_MODEL` for every user (existing rows and new
+  signups via the `createUser` hook) — the real bug, since fixing `.env`
+  alone wouldn't have fixed this. Both now default to
+  `gemini-flash-latest` (Google's current-Flash alias, chosen over another
+  pinned version specifically so this doesn't silently rot the same way
+  again); `src/lib/gemini/pricing.ts` updated to price the new default so
+  cost tracking (spec §31) doesn't go silently blank. Two migrations
+  (`fix_ai_config_default_model`, `switch_default_model_to_flash_latest`)
+  plus a one-off data backfill (`UPDATE "AIConfiguration" SET model = ...`
+  via Prisma, not a migration — existing rows needed the value changed,
+  not just the column default) applied against the real database.
+  `callGemini()` also gained a retry-with-backoff for 5xx ("ServerError")
+  responses — Gemini's real API does return transient 503 "high demand"
+  errors, and retrying those (never a 4xx) is standard practice, not
+  speculative.
+- **Meta/Instagram app credentials:** real and valid — confirmed via a
+  live Graph API call (`GET /oauth/access_token?grant_type=client_credentials`
+  succeeded, app resolves to name "chat-bot"). **`GET /{app-id}/subscriptions`
+  returned an empty list** — the webhook has never been subscribed on
+  Meta's side, confirming this specific gap precisely rather than just
+  assuming it. Actually connecting a real Instagram account and receiving
+  a real webhook delivery needs the account owner to complete Instagram's
+  OAuth consent in a browser (can't be scripted) and a public HTTPS URL
+  for the webhook callback (this environment has neither a tunnel tool nor
+  Docker installed — see §10) — not done this pass.
+- **Full E2E flow (spec §68, `tests/e2e/full-flow.spec.ts`):** rebuilt with
+  a real scripted login (`tests/e2e/global-setup.ts` inserts a real
+  `Session` row rather than mocking auth) and run against the real seeded
+  Postgres and real Gemini — no mocks anywhere. Reached step 9 of 12 in a
+  clean run (login, Instagram-connected check, conversation navigation,
+  chat-mode selection, AI-enable, real Gemini-generated draft, draft
+  review/edit all for real). Two real, non-app findings surfaced getting
+  this far: real Gemini calls made from inside `next dev --turbopack`
+  consistently 503'd (fine as a standalone script; the issue is Turbopack
+  dev's request handling, not this app's Gemini integration — worked
+  reliably once run against a real production build instead), and Auth.js
+  enforces its `UntrustedHost` protection strictly in production, so the
+  server's port must match `NEXTAUTH_URL` exactly. Steps 10-12 (approve/
+  send/disable/takeover) are written and exercise real code paths but
+  weren't confirmed reliably green — see the test file's header comment
+  for the full detail, including a `.next` build-cache corruption caused
+  by multiple concurrent Claude Code sessions on this machine running
+  their own dev servers against the same project directory, which is
+  suspected but not confirmed to be why session validation flaked
+  intermittently in later attempts.
+- **Not done this pass, needs the user:** a Docker build (Docker/WSL isn't
+  installed on this machine — installing it is a real system change, left
+  for the user to decide on) and a real Instagram OAuth connection +
+  webhook delivery (needs the user's own Instagram login in a browser,
+  plus a public tunnel for the webhook callback).
 
 ## 1. Current architecture (end of Phase 14)
 

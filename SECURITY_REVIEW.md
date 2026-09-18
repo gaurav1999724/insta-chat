@@ -1,5 +1,17 @@
 # Security Review
 
+**Update (2026-09-18):** this review's original text below was written
+before real Postgres/Meta/Gemini credentials existed in this environment;
+see `PROJECT_ANALYSIS.md` §0 for what's since been verified against real
+infrastructure. Nothing in that verification pass changed any verdict
+below — the two real bugs found (a retired Gemini model name in two
+places) were configuration/data issues, not security findings — but the
+"not re-verified this review" and "outstanding items" sections' framing
+of Postgres/Meta/Gemini as entirely unreachable is now out of date for the
+parts §0 covers (webhook signature verification is still unverified
+against a real Meta-signed delivery specifically, since no webhook
+subscription has been configured on Meta's side yet).
+
 Spec §87 final security review, performed **2026-09-18** (Phase 14) as a
 verification pass over everything built across Phases 1–13, plus a
 dedicated grep-based sweep for the specific items not yet explicitly
