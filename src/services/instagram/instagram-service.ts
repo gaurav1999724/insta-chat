@@ -22,6 +22,27 @@ const SCOPES = ["instagram_business_basic", "instagram_business_manage_messages"
 
 export const INSTAGRAM_CALLBACK_PATH = "/api/instagram/callback";
 
+// Meta's edge/WAF has been observed returning a silent HTTP 200 with an
+// empty JSON body (instead of a real OAuthException) for token-exchange
+// calls made from Vercel's serverless IPs when the request looks
+// automated — undici's default fetch sends no `User-Agent`/`Accept`.
+// Always send both, and force `no-store` so nothing in the request path
+// can serve a cached response for what must always be a fresh call.
+const META_FETCH_HEADERS = {
+  "User-Agent": "InstaMate/1.0 (+https://www.instagram.com/oauth/authorize)",
+  Accept: "application/json",
+};
+
+function metaDiagnosticHeaders(response: Response): Record<string, string | null> {
+  return {
+    contentType: response.headers.get("content-type"),
+    contentLength: response.headers.get("content-length"),
+    fbTraceId: response.headers.get("x-fb-trace-id"),
+    via: response.headers.get("via"),
+    server: response.headers.get("server"),
+  };
+}
+
 function requireAppCredentials(): { appId: string; appSecret: string } {
   if (!env.META_APP_ID || !env.META_APP_SECRET) {
     throw new InstagramApiError(
@@ -69,7 +90,12 @@ export async function exchangeCodeForShortLivedToken(
     code,
   });
 
-  const response = await fetch(SHORT_LIVED_TOKEN_URL, { method: "POST", body });
+  const response = await fetch(SHORT_LIVED_TOKEN_URL, {
+    method: "POST",
+    body,
+    headers: META_FETCH_HEADERS,
+    cache: "no-store",
+  });
   const json = await response.json().catch(() => null);
   // Instagram Login returns token fields at the top level. Keep accepting
   // the older nested shape for compatibility with existing Meta responses.
@@ -79,7 +105,12 @@ export async function exchangeCodeForShortLivedToken(
     throw new InstagramApiError(
       "Instagram rejected the authorization code.",
       "INSTAGRAM_AUTH_ERROR",
-      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
+      {
+        httpStatus: response.status,
+        httpStatusText: response.statusText,
+        headers: metaDiagnosticHeaders(response),
+        body: json,
+      },
     );
   }
 
@@ -107,14 +138,19 @@ export async function exchangeForLongLivedToken(
   url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("access_token", shortLivedAccessToken);
 
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: META_FETCH_HEADERS, cache: "no-store" });
   const json = await response.json().catch(() => null);
 
   if (!response.ok || !json?.access_token) {
     throw new InstagramApiError(
       "Failed to exchange the Instagram token for a long-lived one.",
       "INSTAGRAM_AUTH_ERROR",
-      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
+      {
+        httpStatus: response.status,
+        httpStatusText: response.statusText,
+        headers: metaDiagnosticHeaders(response),
+        body: json,
+      },
     );
   }
 
@@ -131,14 +167,19 @@ export async function refreshLongLivedToken(
   url.searchParams.set("grant_type", "ig_refresh_token");
   url.searchParams.set("access_token", longLivedAccessToken);
 
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: META_FETCH_HEADERS, cache: "no-store" });
   const json = await response.json().catch(() => null);
 
   if (!response.ok || !json?.access_token) {
     throw new InstagramApiError(
       "Failed to refresh the Instagram access token.",
       "INSTAGRAM_AUTH_ERROR",
-      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
+      {
+        httpStatus: response.status,
+        httpStatusText: response.statusText,
+        headers: metaDiagnosticHeaders(response),
+        body: json,
+      },
     );
   }
 
@@ -157,14 +198,19 @@ export async function getProfile(accessToken: string): Promise<InstagramProfile>
   url.searchParams.set("fields", "id,username,account_type,profile_picture_url");
   url.searchParams.set("access_token", accessToken);
 
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: META_FETCH_HEADERS, cache: "no-store" });
   const json = await response.json().catch(() => null);
 
   if (!response.ok || !json?.id || !json?.username) {
     throw new InstagramApiError(
       "Failed to load the connected Instagram account's profile.",
       "INSTAGRAM_API_ERROR",
-      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
+      {
+        httpStatus: response.status,
+        httpStatusText: response.statusText,
+        headers: metaDiagnosticHeaders(response),
+        body: json,
+      },
     );
   }
 
@@ -188,14 +234,24 @@ export async function subscribeToMessageWebhooks(
     access_token: accessToken,
   });
 
-  const response = await fetch(url, { method: "POST", body });
+  const response = await fetch(url, {
+    method: "POST",
+    body,
+    headers: META_FETCH_HEADERS,
+    cache: "no-store",
+  });
   const json = await response.json().catch(() => null);
 
   if (!response.ok || json?.success !== true) {
     throw new InstagramApiError(
       "Failed to subscribe the Instagram account to message webhooks.",
       "INSTAGRAM_API_ERROR",
-      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
+      {
+        httpStatus: response.status,
+        httpStatusText: response.statusText,
+        headers: metaDiagnosticHeaders(response),
+        body: json,
+      },
     );
   }
 }
@@ -222,6 +278,7 @@ export async function sendMessage(
   const response = await fetch(url, {
     method: "POST",
     headers: {
+      ...META_FETCH_HEADERS,
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
@@ -229,6 +286,7 @@ export async function sendMessage(
       recipient: { id: recipientInstagramUserId },
       message: { text },
     }),
+    cache: "no-store",
   });
 
   const json = await response.json().catch(() => null);
@@ -237,7 +295,12 @@ export async function sendMessage(
     throw new InstagramApiError(
       "Failed to send the Instagram message.",
       "INSTAGRAM_API_ERROR",
-      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
+      {
+        httpStatus: response.status,
+        httpStatusText: response.statusText,
+        headers: metaDiagnosticHeaders(response),
+        body: json,
+      },
     );
   }
 
