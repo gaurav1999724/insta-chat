@@ -79,7 +79,7 @@ export async function exchangeCodeForShortLivedToken(
     throw new InstagramApiError(
       "Instagram rejected the authorization code.",
       "INSTAGRAM_AUTH_ERROR",
-      json,
+      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
     );
   }
 
@@ -114,7 +114,7 @@ export async function exchangeForLongLivedToken(
     throw new InstagramApiError(
       "Failed to exchange the Instagram token for a long-lived one.",
       "INSTAGRAM_AUTH_ERROR",
-      json,
+      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
     );
   }
 
@@ -138,7 +138,7 @@ export async function refreshLongLivedToken(
     throw new InstagramApiError(
       "Failed to refresh the Instagram access token.",
       "INSTAGRAM_AUTH_ERROR",
-      json,
+      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
     );
   }
 
@@ -164,7 +164,7 @@ export async function getProfile(accessToken: string): Promise<InstagramProfile>
     throw new InstagramApiError(
       "Failed to load the connected Instagram account's profile.",
       "INSTAGRAM_API_ERROR",
-      json,
+      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
     );
   }
 
@@ -195,7 +195,7 @@ export async function subscribeToMessageWebhooks(
     throw new InstagramApiError(
       "Failed to subscribe the Instagram account to message webhooks.",
       "INSTAGRAM_API_ERROR",
-      json,
+      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
     );
   }
 }
@@ -237,7 +237,7 @@ export async function sendMessage(
     throw new InstagramApiError(
       "Failed to send the Instagram message.",
       "INSTAGRAM_API_ERROR",
-      json,
+      { httpStatus: response.status, httpStatusText: response.statusText, body: json },
     );
   }
 
