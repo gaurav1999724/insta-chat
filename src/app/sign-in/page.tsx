@@ -25,7 +25,10 @@ export default function SignInPage() {
           <form
             action={async (formData) => {
               "use server";
-              await signIn("nodemailer", { email: formData.get("email") });
+              await signIn("nodemailer", {
+                email: formData.get("email"),
+                redirectTo: "/dashboard",
+              });
             }}
             className="space-y-4"
           >
