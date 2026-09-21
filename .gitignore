@@ -42,6 +42,9 @@ yarn-error.log*
 !.env.example
 !.env.docker.example
 
+# local log file (src/lib/logging/logger.ts) — dev-only, never written on Vercel
+/logs
+
 # vercel
 .vercel
 

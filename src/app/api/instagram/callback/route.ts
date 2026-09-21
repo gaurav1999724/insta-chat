@@ -154,6 +154,7 @@ export async function GET(request: Request) {
     const tokenExpiresAt = new Date(Date.now() + longLived.expiresInSeconds * 1000);
     const shared = {
       userId: user.id,
+      webhookUserId: profile.webhookUserId,
       username: profile.username,
       profilePictureUrl: profile.profilePictureUrl,
       accessTokenEncrypted: encrypt(longLived.accessToken),

@@ -188,6 +188,10 @@ export async function refreshLongLivedToken(
 
 type InstagramProfile = {
   id: string;
+  // The id Meta actually puts in `entry.id` on incoming webhook payloads —
+  // confirmed 2026-09-21 to differ from `id` above for the same account.
+  // See the `webhookUserId` column comment in schema.prisma.
+  webhookUserId: string;
   username: string;
   accountType?: string;
   profilePictureUrl?: string;
@@ -195,13 +199,13 @@ type InstagramProfile = {
 
 export async function getProfile(accessToken: string): Promise<InstagramProfile> {
   const url = new URL(`${GRAPH_HOST}/${env.META_GRAPH_API_VERSION}/me`);
-  url.searchParams.set("fields", "id,username,account_type,profile_picture_url");
+  url.searchParams.set("fields", "id,user_id,username,account_type,profile_picture_url");
   url.searchParams.set("access_token", accessToken);
 
   const response = await fetch(url, { headers: META_FETCH_HEADERS, cache: "no-store" });
   const json = await response.json().catch(() => null);
 
-  if (!response.ok || !json?.id || !json?.username) {
+  if (!response.ok || !json?.id || !json?.user_id || !json?.username) {
     throw new InstagramApiError(
       "Failed to load the connected Instagram account's profile.",
       "INSTAGRAM_API_ERROR",
@@ -216,6 +220,7 @@ export async function getProfile(accessToken: string): Promise<InstagramProfile>
 
   return {
     id: String(json.id),
+    webhookUserId: String(json.user_id),
     username: json.username,
     accountType: json.account_type,
     profilePictureUrl: json.profile_picture_url,

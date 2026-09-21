@@ -196,6 +196,14 @@ model InstagramAccount {
   id                   String                 @id @default(cuid())
   userId               String
   instagramUserId      String                 @unique
+  // Meta's `/me` on `graph.instagram.com` returns two different ids for the
+  // same account under "Instagram API with Instagram Login": `id` (stored
+  // above, used for all our outbound Graph API calls) and `user_id` (stored
+  // here) — and it's `user_id`, not `id`, that shows up as `entry.id` in
+  // incoming webhook payloads. Without this, the webhook account lookup
+  // silently fails for every real message (confirmed 2026-09-21: webhook
+  // delivered fine, `entry.id` just never matched `instagramUserId`).
+  webhookUserId        String?                @unique
   username             String
   displayName          String?
   profilePictureUrl    String?

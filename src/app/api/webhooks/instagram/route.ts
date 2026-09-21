@@ -158,6 +158,18 @@ export async function POST(request: Request) {
   });
 
   const parsed = instagramWebhookPayloadSchema.safeParse(json);
+    logOperation({
+    requestId,
+    operation: "instagram_webhook.schema_validation",
+    status: parsed.success ? "success" : "failure",
+    errorCode: parsed.success
+      ? `entries_${parsed.data.entry.length}_events_${parsed.data.entry.reduce(
+          (count, entry) => count + (entry.messaging?.length ?? 0),
+          0,
+        )}`
+      : `issues_${parsed.error.issues.length}`,
+    durationMs: Date.now() - startedAt,
+  });
   if (!parsed.success) {
     logOperation({
       requestId,
@@ -201,9 +213,14 @@ export async function POST(request: Request) {
     }
 
     // Account ownership (spec §38/§74): only process events for Instagram
-    // accounts we actually have connected and active.
-    const instagramAccount = await prisma.instagramAccount.findUnique({
-      where: { instagramUserId: entry.id },
+    // accounts we actually have connected and active. `entry.id` is Meta's
+    // webhook-scoped id (`user_id` from `/me`), which differs from the
+    // Graph-API-scoped `id` we use everywhere else (`instagramUserId`) —
+    // confirmed 2026-09-21 (see `webhookUserId` column comment). Matching
+    // only `instagramUserId` here made every real message silently
+    // unmatched, even though the webhook delivery itself worked fine.
+    const instagramAccount = await prisma.instagramAccount.findFirst({
+      where: { OR: [{ webhookUserId: entry.id }, { instagramUserId: entry.id }] },
       select: { id: true, status: true, userId: true },
     });
 
