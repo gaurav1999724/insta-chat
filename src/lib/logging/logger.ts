@@ -25,6 +25,14 @@ export type LogFields = {
   status: "success" | "failure";
   durationMs?: number;
   errorCode?: string;
+  // Deliberately named fields, not a catch-all `metadata` — a caller must
+  // explicitly choose to log a request/response body. Reserved for
+  // SocialAPI.AI call logging; callers MUST redact secrets before passing
+  // these — see `redactSocialApiPayload()` in
+  // `src/services/instagram/instagram-service.ts`. Never pass a raw,
+  // unredacted body here.
+  requestBody?: unknown;
+  responseBody?: unknown;
 };
 
 export function logOperation(fields: LogFields): void {

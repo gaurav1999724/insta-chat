@@ -3,67 +3,79 @@ import { z } from "zod";
 
 import { env } from "@/lib/validation/env";
 
-// Verified against Meta's Instagram/Messenger Platform webhook docs on
-// 2026-09-17 — see docs/WEBHOOKS.md for sources. Only the "messages" field
-// is modeled; message_reactions/messaging_postbacks/etc. are out of scope
-// until something in the app actually needs them.
-export const instagramWebhookAttachmentSchema = z.object({
-  type: z.string(),
-  payload: z.record(z.string(), z.unknown()).optional(),
+// Modeled from SocialAPI.AI's webhook docs (docs.social-api.ai/guides/webhooks)
+// — switched from direct Meta Graph API webhooks 2026-09-21. Every delivery
+// is a single `{event, data}` envelope (not Meta's batched
+// `entry[].messaging[]` array) — one event per HTTP call.
+export const socialApiDmEventSchema = z.object({
+  event: z.enum(["dm.received", "dm.sent"]),
+  data: z.object({
+    id: z.string(),
+    type: z.string(),
+    platform: z.string(),
+    account_id: z.string(),
+    conversation_id: z.string(),
+    platform_id: z.string(),
+    author: z.object({
+      id: z.string(),
+      // `.nullable()` throughout this schema: confirmed 2026-09-21 that
+      // SocialAPI.AI sends unset optional fields as explicit `null`
+      // rather than omitting them (see the `metadata` field below, where
+      // this was first caught via a real failed delivery).
+      name: z.string().nullable().optional(),
+      avatar_url: z.string().nullable().optional(),
+    }),
+    content: z.object({
+      text: z.string().nullable().optional(),
+      media: z
+        .array(z.object({ type: z.string().nullable().optional(), url: z.string().nullable().optional() }))
+        .nullable()
+        .optional(),
+    }),
+    received_at: z.string(),
+    // Confirmed 2026-09-21 via a real delivery: SocialAPI.AI sends this as
+    // an explicit `null`, not an omitted field — `.optional()` alone only
+    // accepts `undefined`, so every real DM was failing schema validation
+    // here until `.nullable()` was added.
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+  }),
 });
 
-export const instagramWebhookMessageSchema = z.object({
-  mid: z.string().optional(),
-  text: z.string().optional(),
-  attachments: z.array(instagramWebhookAttachmentSchema).optional(),
-  is_echo: z.boolean().optional(),
-  is_deleted: z.boolean().optional(),
-  is_unsupported: z.boolean().optional(),
-  reply_to: z
-    .object({
-      mid: z.string().optional(),
-      story: z.record(z.string(), z.unknown()).optional(),
-    })
-    .optional(),
+// The minimal shape every event shares — parsed first so the route can
+// branch on `event` before validating the (possibly much stricter)
+// specific schema. Every other documented event type beyond dm.received/
+// dm.sent (delivery receipts, comments, mentions, referrals, postbacks) is
+// acknowledged but not modeled in detail — only inbound/outbound DM
+// content is turned into a `Message` row (spec: "only what's actually
+// used"), so this envelope is all that's needed for those.
+export const socialApiWebhookEnvelopeSchema = z.object({
+  event: z.string(),
+  data: z.record(z.string(), z.unknown()),
 });
 
-export const instagramWebhookMessagingItemSchema = z.object({
-  sender: z.object({ id: z.string() }).optional(),
-  recipient: z.object({ id: z.string() }).optional(),
-  timestamp: z.number(),
-  message: instagramWebhookMessageSchema.optional(),
-});
+export type SocialApiDmEvent = z.infer<typeof socialApiDmEventSchema>;
 
-export const instagramWebhookEntrySchema = z.object({
-  id: z.string(),
-  time: z.number().optional(),
-  messaging: z.array(instagramWebhookMessagingItemSchema).optional(),
-});
-
-export const instagramWebhookPayloadSchema = z.object({
-  object: z.literal("instagram"),
-  entry: z.array(instagramWebhookEntrySchema),
-});
-
-export type InstagramWebhookMessagingItem = z.infer<
-  typeof instagramWebhookMessagingItemSchema
->;
-
-// Meta signs every Event Notification with the app secret; verify the raw
-// request bytes before parsing anything (spec §38 — never trust incoming
-// webhook data blindly).
+// SocialAPI.AI signs every webhook request (unlike CollectAPI, which
+// didn't sign at all). Two headers exist for backward compatibility:
+// `X-SocialAPI-Signature` (v1, HMAC-SHA256 of the raw body alone) and
+// `X-SocialAPI-Signature-V2` (HMAC-SHA256 of `${timestamp}.${rawBody}`,
+// which adds replay protection since the timestamp is bound into the
+// signed value). Verify against v2, and against the exact raw bytes
+// SocialAPI signed — never a re-serialized body, which would break the
+// comparison.
 export function isValidWebhookSignature(
   rawBody: string,
-  signatureHeader: string | null,
+  timestampHeader: string | null,
+  signatureV2Header: string | null,
 ): boolean {
-  if (!signatureHeader || !env.META_APP_SECRET) return false;
+  if (!timestampHeader || !signatureV2Header || !env.SOCIALAPI_WEBHOOK_SECRET) return false;
 
-  const [scheme, signature] = signatureHeader.split("=");
+  const [scheme, signature] = signatureV2Header.split("=");
   if (scheme !== "sha256" || !signature) return false;
 
   const expected = crypto
-    .createHmac("sha256", env.META_APP_SECRET)
-    .update(rawBody)
+    .createHmac("sha256", env.SOCIALAPI_WEBHOOK_SECRET)
+    .update(`${timestampHeader}.${rawBody}`)
     .digest("hex");
 
   const expectedBuffer = Buffer.from(expected, "hex");
@@ -73,25 +85,9 @@ export function isValidWebhookSignature(
   return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
 }
 
-export function isValidVerifyToken(mode: string | null, token: string | null): boolean {
-  return (
-    mode === "subscribe" &&
-    !!token &&
-    !!env.META_WEBHOOK_VERIFY_TOKEN &&
-    token === env.META_WEBHOOK_VERIFY_TOKEN
-  );
-}
-
-// A single POST can batch several messaging events across several entries;
-// each needs its own idempotency key (spec §28) since Meta may redeliver
-// the whole batch on a timeout or non-2xx response. `mid` is the natural
-// key; events without one (rare) fall back to a synthetic key.
-export function getMessagingItemEventId(
-  entryId: string,
-  item: InstagramWebhookMessagingItem,
-): string {
-  return (
-    item.message?.mid ??
-    `${entryId}:${item.sender?.id ?? "unknown"}:${item.timestamp}`
-  );
+// Idempotency key (spec §28): `platform_id` is the field SocialAPI's own
+// docs say correlates a webhook delivery to the same message fetched via
+// the REST inbox/messages endpoint — the stable key across both paths.
+export function getMessageEventId(item: SocialApiDmEvent): string {
+  return item.data.platform_id;
 }

@@ -7,7 +7,6 @@ import {
   isWithinMessagingWindow,
 } from "@/lib/instagram/send-eligibility";
 import { logOperation } from "@/lib/logging/logger";
-import { decrypt } from "@/lib/security/encryption";
 import { checkRateLimit, formatRetryAfter } from "@/lib/security/rate-limit";
 import { sendMessage } from "@/services/instagram/instagram-service";
 
@@ -19,7 +18,6 @@ export class SendMessageError extends Error {}
 
 type ConversationWithAccount = Conversation & {
   instagramAccount: InstagramAccount;
-  participant: { externalUserId: string };
 };
 
 async function assertSendEligible(conversation: ConversationWithAccount): Promise<void> {
@@ -42,11 +40,13 @@ async function callInstagramSend(
   conversation: ConversationWithAccount,
   text: string,
 ): Promise<{ externalMessageId: string }> {
-  const accessToken = decrypt(conversation.instagramAccount.accessTokenEncrypted);
+  // SocialAPI.AI's send endpoint addresses the conversation by its own
+  // `conversation_id` (stored as `externalConversationId`), not the
+  // participant's user id — a real, distinct thread id this provider
+  // gives us, unlike Meta/CollectAPI's synthetic same-as-participant one.
   return sendMessage(
-    accessToken,
     conversation.instagramAccount.instagramUserId,
-    conversation.participant.externalUserId,
+    conversation.externalConversationId,
     text,
   );
 }
@@ -66,10 +66,7 @@ export async function sendApprovedDraft(
     where: { id: aiResponseId },
     include: {
       conversation: {
-        include: {
-          instagramAccount: true,
-          participant: { select: { externalUserId: true } },
-        },
+        include: { instagramAccount: true },
       },
     },
   });
@@ -215,10 +212,7 @@ export async function sendManualMessage(
 ): Promise<SendMessageResult> {
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
-    include: {
-      instagramAccount: true,
-      participant: { select: { externalUserId: true } },
-    },
+    include: { instagramAccount: true },
   });
 
   if (!conversation) {

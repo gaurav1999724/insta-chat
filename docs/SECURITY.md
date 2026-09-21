@@ -4,6 +4,25 @@ Status: living checklist. **Finalized as `SECURITY_REVIEW.md` (Phase 14,
 spec §87)** — that document is the point-in-time final verdict; this one
 remains the per-phase incremental history.
 
+> **Update (2026-09-21):** Instagram integration switched from direct Meta
+> Graph API access to SocialAPI.AI (a third-party aggregator using its own
+> managed Meta OAuth app) — see `docs/INSTAGRAM_SETUP.md` for the full
+> reasoning. This invalidates two items in the Phase 4 section below:
+> - "Instagram access tokens encrypted at rest" no longer applies — there
+>   is no per-account token to encrypt anymore. `ENCRYPTION_KEY` and
+>   `src/lib/security/encryption.ts` were removed. The real Meta OAuth
+>   token now lives entirely on SocialAPI.AI's infrastructure.
+> - Webhook signature verification still holds, but the mechanism changed:
+>   `X-SocialAPI-Signature-V2` (HMAC-SHA256 of `{timestamp}.{rawBody}`,
+>   with replay protection from the bound timestamp) replaces Meta's
+>   `X-Hub-Signature-256`, keyed by `SOCIALAPI_WEBHOOK_SECRET` instead of
+>   `META_APP_SECRET`. Still verified before any parsing, still
+>   timing-safe.
+>
+> New consideration this checklist didn't have before: Instagram access
+> now depends on a third party's continued reliability — see
+> `docs/INSTAGRAM_SETUP.md`'s "What kind of integration this is" section.
+
 ## Done (Phase 1)
 
 - [x] Secrets (`NEXTAUTH_SECRET`, `ENCRYPTION_KEY`, future API keys) only

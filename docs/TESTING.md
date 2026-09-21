@@ -48,10 +48,10 @@ one, as it did twice here.
   setting or `.tsx` files fail to parse.
 - `test.env` — dummy-but-schema-valid values for every variable
   `@/lib/validation/env` requires (`DATABASE_URL`, `NEXTAUTH_SECRET`,
-  `NEXTAUTH_URL`, `ENCRYPTION_KEY`, plus `META_APP_SECRET`/
-  `META_WEBHOOK_VERIFY_TOKEN` for the webhook signature tests), so
-  importing `env` never throws in a test and no real secret is ever
-  needed (spec §66/§67: "never use real credentials in automated tests").
+  `NEXTAUTH_URL`, plus `SOCIALAPI_TOKEN`/`SOCIALAPI_WEBHOOK_SECRET` for
+  the SocialAPI.AI/webhook tests), so importing `env` never throws in a
+  test and no real secret is ever needed (spec §66/§67: "never use real
+  credentials in automated tests").
 - `test.include` covers `tests/unit/**` and `tests/integration/**`;
   `tests/e2e/**` is explicitly excluded — Playwright owns that directory.
 
@@ -63,16 +63,15 @@ auto-extends Vitest's `expect` with the jest-dom matchers.
 - **Pure logic, no mocking needed:** `validateAIResponse()`,
   `buildPrompt()`/`buildSystemInstruction()`/`buildConversationContents()`,
   `estimateCostUsd()`, `isWithinMessagingWindow()`,
-  `isValidWebhookSignature()`/`isValidVerifyToken()`/
-  `getMessagingItemEventId()`, `encrypt()`/`decrypt()`,
+  `isValidWebhookSignature()`/`getMessageEventId()`,
   `parseStatusFilter()`, `formatRetryAfter()`.
 - **Mocked-dependency unit tests:** `createDraftReply()`,
   `sendManualMessage()`, `processMessagingItem()`, the `ai-response`
   worker's processor function, `generateResponse()`/`extractMemory()`/
   `analyzeCommunicationStyle()` (mocking `@google/genai`),
-  `getAuthorizationUrl()`/`exchangeCodeForShortLivedToken()`/
-  `exchangeForLongLivedToken()`/`getProfile()`/`sendMessage()` (mocking
-  global `fetch`), `getConversationList()`, and the ownership/authorization
+  `getConnectAuthUrl()`/`exchangeOAuthCode()`/`sendMessage()`/
+  `listConnectedAccounts()` (mocking global `fetch`),
+  `getConversationList()`, and the ownership/authorization
   checks in `src/app/conversations/actions.ts` (spec §66 "Authorization" —
   every action re-verifies `conversation.instagramAccount.userId ===
 session.user.id`, and `setConversationChatMode()` re-verifies chat mode

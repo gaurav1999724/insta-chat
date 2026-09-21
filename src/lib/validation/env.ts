@@ -11,14 +11,17 @@ const envSchema = z.object({
   EMAIL_SERVER: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
 
-  META_APP_ID: z.string().optional(),
-  META_APP_SECRET: z.string().optional(),
-  // Verified against developers.facebook.com/docs/graph-api/changelog on
-  // 2026-09-17: v26.0 is current (v20.0 is being deprecated 2026-09-24).
-  // Re-check before assuming this is still current — Meta ships a new
-  // version roughly quarterly (spec §39).
-  META_GRAPH_API_VERSION: z.string().default("v26.0"),
-  META_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
+  // SocialAPI.AI (social-api.ai) — replaced direct Meta Graph API access
+  // 2026-09-21. One project-wide API key authenticates every call; the
+  // real Meta OAuth token for each connected Instagram account lives
+  // entirely on SocialAPI.AI's infrastructure, never on ours (see
+  // docs/INSTAGRAM_SETUP.md).
+  SOCIALAPI_TOKEN: z.string().optional(),
+  // Returned once by `POST /webhooks` when the webhook endpoint is first
+  // registered (a one-time manual setup step — see docs/INSTAGRAM_SETUP.md)
+  // — used to verify the `X-SocialAPI-Signature-V2` HMAC header on every
+  // incoming webhook call.
+  SOCIALAPI_WEBHOOK_SECRET: z.string().optional(),
 
   GEMINI_API_KEY: z.string().optional(),
   // Verified against ai.google.dev/gemini-api/docs/models on 2026-09-17:
@@ -30,8 +33,6 @@ const envSchema = z.object({
   // 404s) and can hit real capacity 503s the alias doesn't. Re-verify
   // before assuming this is still current.
   GEMINI_MODEL: z.string().default("gemini-flash-latest"),
-
-  ENCRYPTION_KEY: z.string().min(32, "ENCRYPTION_KEY must be at least 32 characters"),
 });
 
 export type Env = z.infer<typeof envSchema>;

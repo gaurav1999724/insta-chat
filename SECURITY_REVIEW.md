@@ -1,5 +1,24 @@
 # Security Review
 
+**Update (2026-09-21):** the Instagram integration was switched from
+direct Meta Graph API access to SocialAPI.AI, a third-party aggregator
+that connects accounts through a real Meta OAuth consent screen using its
+own managed developer app (no Meta Developer App/App Review needed on our
+side) — see `docs/INSTAGRAM_SETUP.md` for the full reasoning, including a
+briefly-tried, rejected alternative (CollectAPI, which drove a real
+logged-in session via username/password with no webhook signing at all —
+not what's in place now). This changes two verdicts below: "Instagram
+access tokens encrypted at rest" no longer applies (`ENCRYPTION_KEY` and
+`src/lib/security/encryption.ts` were removed — there's no per-account
+token to encrypt anymore, since the real Meta OAuth token now lives
+entirely on SocialAPI.AI's infrastructure), and "webhook signature
+verification" now checks `X-SocialAPI-Signature-V2` (HMAC-SHA256 of
+`{timestamp}.{rawBody}`, keyed by `SOCIALAPI_WEBHOOK_SECRET`) instead of
+Meta's `X-Hub-Signature-256` — still verified before parsing, still
+timing-safe, with added replay protection from the bound timestamp. A
+fresh security pass over the new integration hasn't been done as of this
+update.
+
 **Update (2026-09-18):** this review's original text below was written
 before real Postgres/Meta/Gemini credentials existed in this environment;
 see `PROJECT_ANALYSIS.md` §0 for what's since been verified against real

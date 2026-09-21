@@ -147,9 +147,6 @@ async function seedSampleConversation(casualModeId: string | undefined) {
       instagramUserId: "seed-ig-account-demo",
       username: "demo.instamate",
       displayName: "Demo InstaMate Account",
-      // Not a real credential — placeholder only, seed data never contains
-      // real Instagram tokens.
-      accessTokenEncrypted: "seed-placeholder-not-a-real-token",
       status: "ACTIVE",
     },
   });

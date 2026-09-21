@@ -1,11 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { InstagramWebhookMessagingItem } from "@/lib/instagram/webhook";
+import type { SocialApiDmEvent } from "@/lib/instagram/webhook";
 
 const { prismaMock } = vi.hoisted(() => ({
   prismaMock: {
     $transaction: vi.fn(),
-    message: { updateMany: vi.fn() },
   },
 }));
 vi.mock("@/lib/db/prisma", () => ({ prisma: prismaMock }));
@@ -28,24 +27,30 @@ function stubTransaction({
     },
     message: {
       upsert: vi.fn().mockResolvedValue({ id: "message-1" }),
-      create: vi.fn().mockResolvedValue({ id: "message-1" }),
       count: vi.fn().mockResolvedValue(messageCount),
     },
   };
-  prismaMock.$transaction.mockImplementation((callback: (tx: unknown) => unknown) =>
-    callback(tx),
+  prismaMock.$transaction.mockImplementation(
+    (callback: (tx: unknown) => unknown) => callback(tx),
   );
   return tx;
 }
 
-const baseItem = (overrides: Partial<InstagramWebhookMessagingItem> = {}) =>
-  ({
-    sender: { id: "contact-1" },
-    recipient: { id: "account-1" },
-    timestamp: 1700000000000,
-    message: { mid: "mid.1", text: "Hello there" },
+const baseEvent = (overrides: Partial<SocialApiDmEvent["data"]> = {}): SocialApiDmEvent => ({
+  event: "dm.received",
+  data: {
+    id: "sapi_dm_1",
+    type: "dm",
+    platform: "instagram",
+    account_id: "acc_1",
+    conversation_id: "conv_1",
+    platform_id: "m_1",
+    author: { id: "contact-1", name: "Contact" },
+    content: { text: "Hello there" },
+    received_at: "2026-03-01T14:30:00Z",
     ...overrides,
-  }) as InstagramWebhookMessagingItem;
+  },
+});
 
 describe("processMessagingItem", () => {
   beforeEach(() => {
@@ -55,12 +60,26 @@ describe("processMessagingItem", () => {
   it("persists an inbound text message", async () => {
     const tx = stubTransaction();
 
-    const result = await processMessagingItem("account-1", baseItem());
+    const result = await processMessagingItem("account-1", baseEvent());
 
-    expect(result).toEqual({ processed: true, messageId: "message-1" });
+    expect(result).toEqual({
+      processed: true,
+      messageId: "message-1",
+      conversationId: "conversation-1",
+    });
+    expect(tx.conversation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          instagramAccountId_externalConversationId: {
+            instagramAccountId: "account-1",
+            externalConversationId: "conv_1",
+          },
+        },
+      }),
+    );
     expect(tx.message.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { externalMessageId: "mid.1" },
+        where: { externalMessageId: "m_1" },
         create: expect.objectContaining({
           senderType: "CONTACT",
           direction: "INBOUND",
@@ -71,50 +90,42 @@ describe("processMessagingItem", () => {
     );
   });
 
-  it("resolves an image attachment to messageType IMAGE", async () => {
+  it("resolves an image message to messageType IMAGE with media in attachmentMetadata", async () => {
     const tx = stubTransaction();
 
     await processMessagingItem(
       "account-1",
-      baseItem({
-        message: {
-          mid: "mid.3",
-          attachments: [{ type: "image", payload: { url: "https://example.com/x.jpg" } }],
-        },
+      baseEvent({
+        platform_id: "m_3",
+        content: { media: [{ type: "image", url: "https://example.com/x.jpg" }] },
       }),
     );
 
     expect(tx.message.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({ messageType: "IMAGE" }),
+        create: expect.objectContaining({
+          messageType: "IMAGE",
+          attachmentMetadata: { media: [{ type: "image", url: "https://example.com/x.jpg" }] },
+        }),
       }),
     );
   });
 
-  it("marks a deleted message's text as null when the original is found (spec: message deletion)", async () => {
-    prismaMock.message.updateMany.mockResolvedValue({ count: 1 });
+  // `dm.sent` is never passed to this function at all — the webhook route
+  // filters it out before calling `processMessagingItem` (confirmed
+  // 2026-09-21: processing it caused a real duplicate-message bug, since
+  // SocialAPI.AI's echo reports Meta's raw message id, a different id
+  // namespace than the one our own send call already recorded the message
+  // under). Every event this function ever receives is inbound.
+  it("always treats the message as inbound (dm.sent is filtered out upstream)", async () => {
+    const tx = stubTransaction();
 
-    const result = await processMessagingItem(
-      "account-1",
-      baseItem({ message: { mid: "mid.1", is_deleted: true } }),
+    await processMessagingItem("account-1", baseEvent({ platform_id: "m_4" }));
+
+    expect(tx.message.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ senderType: "CONTACT", direction: "INBOUND" }),
+      }),
     );
-
-    expect(prismaMock.message.updateMany).toHaveBeenCalledWith({
-      where: { externalMessageId: "mid.1" },
-      data: { text: null },
-    });
-    expect(result).toEqual({ processed: true, messageId: "mid.1" });
   });
-
-  it("reports processed:false when a deleted message's original was never stored", async () => {
-    prismaMock.message.updateMany.mockResolvedValue({ count: 0 });
-
-    const result = await processMessagingItem(
-      "account-1",
-      baseItem({ message: { mid: "mid.404", is_deleted: true } }),
-    );
-
-    expect(result).toEqual({ processed: false, reason: "deleted-message-not-found" });
-  });
-
 });

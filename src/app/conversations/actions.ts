@@ -114,6 +114,41 @@ export async function setConversationChatMode(
   return { success: true };
 }
 
+// Quick per-conversation override for the "Auto-send" behavior, exposed
+// right above the composer for fast access (the full tri-state
+// inherit/on/off control also lives in the AI behavior overrides panel —
+// this always writes an explicit `true`/`false`, never `null`/inherit).
+// See `maybeAutoRespond()` (src/services/ai/auto-respond-service.ts) for
+// what actually happens when this is on: the next inbound message gets an
+// AI reply generated *and sent* with no approval step at all.
+export async function setConversationAutoSend(
+  conversationId: string,
+  autoSend: boolean,
+): Promise<ActionResult> {
+  const user = await requireUser();
+  const conversation = await requireOwnedConversation(user.id, conversationId);
+  if (!conversation) return { success: false, error: "Conversation not found" };
+
+  await prisma.$transaction([
+    prisma.conversationSettings.upsert({
+      where: { conversationId },
+      update: { autoSend },
+      create: { conversationId, autoSend },
+    }),
+    prisma.auditLog.create({
+      data: {
+        userId: user.id,
+        action: "SETTINGS_CHANGED",
+        entityType: "Conversation",
+        entityId: conversationId,
+      },
+    }),
+  ]);
+
+  revalidatePath(`/conversations/${conversationId}`);
+  return { success: true };
+}
+
 export type DraftReplyPayload = {
   aiResponseId: string;
   text: string;

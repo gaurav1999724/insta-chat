@@ -4,10 +4,12 @@ import { revalidatePath } from "next/cache";
 
 import { requireUser } from "@/lib/auth/require-user";
 import { prisma } from "@/lib/db/prisma";
-import { decrypt, encrypt } from "@/lib/security/encryption";
 import { aiConfigurationFormSchema } from "@/lib/validation/ai-configuration";
 import { chatModeFormSchema, generateChatModeKey } from "@/lib/validation/chat-mode";
-import { subscribeToMessageWebhooks } from "@/services/instagram/instagram-service";
+import {
+  disconnectSocialAccount,
+  listConnectedAccounts,
+} from "@/services/instagram/instagram-service";
 
 export type ActionResult = { success: true } | { success: false; error: string };
 export type CreateChatModeResult =
@@ -125,23 +127,32 @@ export async function disconnectInstagramAccount(
   // Authorization (spec §74): only the owning user can disconnect it.
   const account = await prisma.instagramAccount.findFirst({
     where: { id: accountId, userId: user.id },
-    select: { id: true },
+    select: { id: true, instagramUserId: true },
   });
 
   if (!account) {
     return { success: false, error: "Instagram account not found" };
   }
 
+  // Real remote disconnect (`DELETE /accounts/{id}`) — this actually frees
+  // up the connection slot on SocialAPI.AI's side, not just a local status
+  // flip. A 404 (already gone there) is treated as success by
+  // `disconnectSocialAccount()` itself; only a genuine API failure stops
+  // the local disconnect below, so a transient SocialAPI outage doesn't
+  // leave the user stuck with an account they can't get rid of locally.
+  try {
+    await disconnectSocialAccount(account.instagramUserId);
+  } catch {
+    return {
+      success: false,
+      error: "Failed to disconnect the Instagram account. Check the deployment logs.",
+    };
+  }
+
   await prisma.$transaction([
     prisma.instagramAccount.update({
       where: { id: account.id },
-      data: {
-        status: "DISCONNECTED",
-        // Wipe the stored token — a disconnect must not leave a usable
-        // credential behind, even encrypted at rest.
-        accessTokenEncrypted: encrypt(""),
-        tokenExpiresAt: null,
-      },
+      data: { status: "DISCONNECTED" },
     }),
     prisma.auditLog.create({
       data: {
@@ -158,29 +169,65 @@ export async function disconnectInstagramAccount(
   return { success: true };
 }
 
-export async function refreshInstagramWebhookSubscription(
-  accountId: string,
-): Promise<ActionResult> {
+// SocialAPI.AI plans typically allow only a small number of connected
+// accounts. Rather than making the user disconnect-then-reconnect through
+// the OAuth flow just to attach an account that's *already* connected on
+// the platform to this InstaMate user, this links it directly — no new
+// OAuth round-trip needed since SocialAPI.AI already holds a valid
+// connection for it.
+export async function adoptConnectedAccount(platformAccountId: string): Promise<ActionResult> {
   const user = await requireUser();
-  const account = await prisma.instagramAccount.findFirst({
-    where: { id: accountId, userId: user.id, status: "ACTIVE" },
-    select: { id: true, instagramUserId: true, accessTokenEncrypted: true },
-  });
 
-  if (!account) {
-    return { success: false, error: "Active Instagram account not found" };
-  }
-
+  let liveAccounts;
   try {
-    await subscribeToMessageWebhooks(
-      decrypt(account.accessTokenEncrypted),
-      account.instagramUserId,
-    );
-    return { success: true };
+    liveAccounts = await listConnectedAccounts();
   } catch {
     return {
       success: false,
-      error: "Instagram webhook subscription failed. Check the deployment logs.",
+      error: "Failed to verify the connected account. Check the deployment logs.",
     };
   }
+
+  const match = liveAccounts.find((a) => a.id === platformAccountId);
+  if (!match) {
+    return { success: false, error: "That account is no longer connected on SocialAPI.AI." };
+  }
+
+  // Authorization (spec §74): never silently hand an account another
+  // InstaMate user already claimed over to this one.
+  const existing = await prisma.instagramAccount.findUnique({
+    where: { instagramUserId: match.id },
+    select: { userId: true },
+  });
+  if (existing && existing.userId !== user.id) {
+    return {
+      success: false,
+      error: "That Instagram account is already connected to a different InstaMate account.",
+    };
+  }
+
+  const shared = {
+    userId: user.id,
+    username: match.username,
+    displayName: match.name,
+    status: "ACTIVE" as const,
+  };
+  const account = await prisma.instagramAccount.upsert({
+    where: { instagramUserId: match.id },
+    update: shared,
+    create: { instagramUserId: match.id, ...shared },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      userId: user.id,
+      action: "ACCOUNT_CONNECTED",
+      entityType: "InstagramAccount",
+      entityId: account.id,
+    },
+  });
+
+  revalidatePath("/settings");
+  revalidatePath("/dashboard");
+  return { success: true };
 }

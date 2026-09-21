@@ -33,9 +33,8 @@ export default defineConfig({
       DATABASE_URL: "postgresql://test:test@localhost:5432/test",
       NEXTAUTH_SECRET: "test-secret-not-real-0123456789",
       NEXTAUTH_URL: "http://localhost:3000",
-      ENCRYPTION_KEY: "test-encryption-key-not-real-0123456789",
-      META_APP_SECRET: "test-meta-app-secret",
-      META_WEBHOOK_VERIFY_TOKEN: "test-verify-token",
+      SOCIALAPI_TOKEN: "test-socialapi-token",
+      SOCIALAPI_WEBHOOK_SECRET: "test-webhook-secret",
     },
   },
 });

@@ -2,124 +2,171 @@ import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
-  getMessagingItemEventId,
-  instagramWebhookPayloadSchema,
-  isValidVerifyToken,
+  getMessageEventId,
   isValidWebhookSignature,
-  type InstagramWebhookMessagingItem,
+  socialApiDmEventSchema,
+  socialApiWebhookEnvelopeSchema,
+  type SocialApiDmEvent,
 } from "@/lib/instagram/webhook";
 
-// Matches vitest.config.ts's `test.env.META_APP_SECRET` — never a real secret.
-const TEST_APP_SECRET = "test-meta-app-secret";
+// Matches vitest.config.ts's `test.env.SOCIALAPI_WEBHOOK_SECRET` — never a
+// real secret.
+const TEST_WEBHOOK_SECRET = "test-webhook-secret";
 
-function signBody(body: string): string {
-  const digest = crypto.createHmac("sha256", TEST_APP_SECRET).update(body).digest("hex");
+function signBody(body: string, timestamp: string): string {
+  const digest = crypto
+    .createHmac("sha256", TEST_WEBHOOK_SECRET)
+    .update(`${timestamp}.${body}`)
+    .digest("hex");
   return `sha256=${digest}`;
 }
 
 describe("isValidWebhookSignature", () => {
-  it("accepts a correctly signed body (spec §38)", () => {
-    const body = JSON.stringify({ object: "instagram", entry: [] });
-    expect(isValidWebhookSignature(body, signBody(body))).toBe(true);
+  it("accepts a correctly signed body", () => {
+    const body = JSON.stringify({ event: "dm.received", data: {} });
+    const timestamp = "1700000000";
+    expect(isValidWebhookSignature(body, timestamp, signBody(body, timestamp))).toBe(true);
   });
 
   it("rejects a body whose signature doesn't match", () => {
-    const body = JSON.stringify({ object: "instagram", entry: [] });
-    expect(isValidWebhookSignature(body, signBody(body + "tampered"))).toBe(false);
+    const body = JSON.stringify({ event: "dm.received", data: {} });
+    const timestamp = "1700000000";
+    expect(
+      isValidWebhookSignature(body, timestamp, signBody(body + "tampered", timestamp)),
+    ).toBe(false);
+  });
+
+  it("rejects a mismatched timestamp (replay protection)", () => {
+    const body = JSON.stringify({ event: "dm.received", data: {} });
+    const signedAt = "1700000000";
+    expect(isValidWebhookSignature(body, "1700000999", signBody(body, signedAt))).toBe(false);
   });
 
   it("rejects a missing signature header", () => {
-    expect(isValidWebhookSignature("{}", null)).toBe(false);
+    expect(isValidWebhookSignature("{}", "1700000000", null)).toBe(false);
+  });
+
+  it("rejects a missing timestamp header", () => {
+    expect(isValidWebhookSignature("{}", null, "sha256=abc")).toBe(false);
   });
 
   it("rejects a malformed signature header (no sha256= scheme)", () => {
-    expect(isValidWebhookSignature("{}", "not-a-real-header")).toBe(false);
+    expect(isValidWebhookSignature("{}", "1700000000", "not-a-real-header")).toBe(false);
   });
 });
 
-describe("isValidVerifyToken", () => {
-  it("accepts the correct subscribe handshake (spec §38)", () => {
-    expect(isValidVerifyToken("subscribe", "test-verify-token")).toBe(true);
-  });
-
-  it("rejects the wrong token", () => {
-    expect(isValidVerifyToken("subscribe", "wrong-token")).toBe(false);
-  });
-
-  it("rejects a non-subscribe mode", () => {
-    expect(isValidVerifyToken("unsubscribe", "test-verify-token")).toBe(false);
-  });
-
-  it("rejects a null token", () => {
-    expect(isValidVerifyToken("subscribe", null)).toBe(false);
-  });
-});
-
-describe("instagramWebhookPayloadSchema", () => {
-  it("accepts a realistic Instagram messaging payload", () => {
-    const result = instagramWebhookPayloadSchema.safeParse({
-      object: "instagram",
-      entry: [
-        {
-          id: "17841400000000000",
-          time: 1700000000,
-          messaging: [
-            {
-              sender: { id: "1234" },
-              recipient: { id: "5678" },
-              timestamp: 1700000000,
-              message: { mid: "mid.123", text: "Hey!" },
-            },
-          ],
-        },
-      ],
+describe("socialApiWebhookEnvelopeSchema", () => {
+  it("accepts any event with a data object", () => {
+    const result = socialApiWebhookEnvelopeSchema.safeParse({
+      event: "comment.received",
+      data: { foo: "bar" },
     });
     expect(result.success).toBe(true);
   });
 
-  it("rejects a payload for a different platform", () => {
-    const result = instagramWebhookPayloadSchema.safeParse({
-      object: "page",
-      entry: [],
+  it("rejects a payload missing event", () => {
+    const result = socialApiWebhookEnvelopeSchema.safeParse({ data: {} });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("socialApiDmEventSchema", () => {
+  it("accepts a realistic dm.received payload", () => {
+    const result = socialApiDmEventSchema.safeParse({
+      event: "dm.received",
+      data: {
+        id: "sapi_dm_1",
+        type: "dm",
+        platform: "instagram",
+        account_id: "acc_1",
+        conversation_id: "conv_1",
+        platform_id: "m_100",
+        author: { id: "1234", name: "Jane" },
+        content: { text: "Hey!" },
+        received_at: "2026-03-01T14:30:00Z",
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts explicit null for optional fields (real SocialAPI.AI deliveries send null, not omit)", () => {
+    // Regression test: confirmed 2026-09-21 via a real webhook delivery
+    // that failed schema validation because `data.metadata` arrived as
+    // `null` rather than being omitted — `.optional()` alone only accepts
+    // `undefined`.
+    const result = socialApiDmEventSchema.safeParse({
+      event: "dm.received",
+      data: {
+        id: "sapi_dm_1",
+        type: "dm",
+        platform: "instagram",
+        account_id: "acc_1",
+        conversation_id: "conv_1",
+        platform_id: "m_100",
+        author: { id: "1234", name: null, avatar_url: null },
+        content: { text: null, media: null },
+        received_at: "2026-03-01T14:30:00Z",
+        metadata: null,
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a payload missing required fields", () => {
+    const result = socialApiDmEventSchema.safeParse({
+      event: "dm.received",
+      data: { id: "sapi_dm_1" },
     });
     expect(result.success).toBe(false);
   });
 
-  it("rejects a malformed entry missing required fields", () => {
-    const result = instagramWebhookPayloadSchema.safeParse({
-      object: "instagram",
-      entry: [{ messaging: [{ sender: { id: "1" } }] }],
+  it("rejects an event type outside dm.received/dm.sent", () => {
+    const result = socialApiDmEventSchema.safeParse({
+      event: "comment.received",
+      data: {
+        id: "sapi_dm_1",
+        type: "dm",
+        platform: "instagram",
+        account_id: "acc_1",
+        conversation_id: "conv_1",
+        platform_id: "m_100",
+        author: { id: "1234" },
+        content: {},
+        received_at: "2026-03-01T14:30:00Z",
+      },
     });
     expect(result.success).toBe(false);
   });
 });
 
-describe("getMessagingItemEventId (spec §28 idempotency)", () => {
-  const baseItem: InstagramWebhookMessagingItem = {
-    sender: { id: "1234" },
-    recipient: { id: "5678" },
-    timestamp: 1700000000,
+describe("getMessageEventId (spec §28 idempotency)", () => {
+  const baseItem: SocialApiDmEvent = {
+    event: "dm.received",
+    data: {
+      id: "sapi_dm_1",
+      type: "dm",
+      platform: "instagram",
+      account_id: "acc_1",
+      conversation_id: "conv_1",
+      platform_id: "m_100",
+      author: { id: "1234" },
+      content: { text: "Hey!" },
+      received_at: "2026-03-01T14:30:00Z",
+    },
   };
 
-  it("uses the message's mid when present", () => {
-    const item = { ...baseItem, message: { mid: "mid.abc123" } };
-    expect(getMessagingItemEventId("entry1", item)).toBe("mid.abc123");
-  });
-
-  it("falls back to a synthetic key derived from entry/sender/timestamp when mid is absent", () => {
-    expect(getMessagingItemEventId("entry1", baseItem)).toBe("entry1:1234:1700000000");
+  it("uses the message's platform_id", () => {
+    expect(getMessageEventId(baseItem)).toBe("m_100");
   });
 
   it("produces the same key for the same event delivered twice (redelivery)", () => {
-    const first = getMessagingItemEventId("entry1", baseItem);
-    const second = getMessagingItemEventId("entry1", { ...baseItem });
+    const first = getMessageEventId(baseItem);
+    const second = getMessageEventId({ ...baseItem, data: { ...baseItem.data } });
     expect(first).toBe(second);
   });
 
-  it("produces different keys for different senders", () => {
-    const other = { ...baseItem, sender: { id: "9999" } };
-    expect(getMessagingItemEventId("entry1", baseItem)).not.toBe(
-      getMessagingItemEventId("entry1", other),
-    );
+  it("produces different keys for different messages", () => {
+    const other = { ...baseItem, data: { ...baseItem.data, platform_id: "m_200" } };
+    expect(getMessageEventId(baseItem)).not.toBe(getMessageEventId(other));
   });
 });

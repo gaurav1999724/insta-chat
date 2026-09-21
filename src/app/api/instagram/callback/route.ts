@@ -4,16 +4,10 @@ import type { ErrorCategory, Prisma } from "@prisma/client";
 
 import { requireUser } from "@/lib/auth/require-user";
 import { prisma } from "@/lib/db/prisma";
-import { encrypt } from "@/lib/security/encryption";
 import { InstagramApiError } from "@/lib/instagram/errors";
 import { logOperation } from "@/lib/logging/logger";
 import { INSTAGRAM_OAUTH_STATE_COOKIE, settingsRedirect } from "@/lib/instagram/oauth";
-import {
-  exchangeCodeForShortLivedToken,
-  exchangeForLongLivedToken,
-  getProfile,
-  subscribeToMessageWebhooks,
-} from "@/services/instagram/instagram-service";
+import { exchangeOAuthCode } from "@/services/instagram/instagram-service";
 
 function redactInstagramDetails(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -24,7 +18,7 @@ function redactInstagramDetails(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [
         key,
-        /access_token|client_secret|authorization|code/i.test(key)
+        /access_token|client_secret|authorization|^code$/i.test(key)
           ? "[REDACTED]"
           : redactInstagramDetails(entry),
       ]),
@@ -108,65 +102,40 @@ export async function GET(request: Request) {
     return settingsRedirect("error");
   }
 
-  let stage = "short_lived_token_exchange";
-
   try {
-    const shortLived = await exchangeCodeForShortLivedToken(code);
+    const exchanged = await exchangeOAuthCode(code, state);
     logOperation({
       requestId,
       userId: user.id,
-      operation: "instagram_token_exchange_short_lived",
-      status: "success",
-    });
-    stage = "long_lived_token_exchange";
-    const longLived = await exchangeForLongLivedToken(shortLived.accessToken);
-    logOperation({
-      requestId,
-      userId: user.id,
-      operation: "instagram_token_exchange_long_lived",
-      status: "success",
-    });
-    stage = "profile_fetch";
-    const profile = await getProfile(longLived.accessToken);
-    logOperation({
-      requestId,
-      userId: user.id,
-      operation: "instagram_profile_fetch",
+      operation: "instagram_oauth_exchange",
       status: "success",
     });
 
-    stage = "account_lookup";
     const existing = await prisma.instagramAccount.findUnique({
-      where: { instagramUserId: profile.id },
+      where: { instagramUserId: exchanged.accountId },
       select: { userId: true },
     });
 
     if (existing && existing.userId !== user.id) {
       await logInstagramError(
         user.id,
-        `Instagram account @${profile.username} is already connected to a different InstaMate account.`,
+        `Instagram account @${exchanged.username} is already connected to a different InstaMate account.`,
         "INSTAGRAM_AUTH_ERROR",
       );
       return settingsRedirect("already_connected");
     }
 
-    stage = "account_persist";
-    const tokenExpiresAt = new Date(Date.now() + longLived.expiresInSeconds * 1000);
     const shared = {
       userId: user.id,
-      webhookUserId: profile.webhookUserId,
-      username: profile.username,
-      profilePictureUrl: profile.profilePictureUrl,
-      accessTokenEncrypted: encrypt(longLived.accessToken),
-      tokenExpiresAt,
+      username: exchanged.username,
+      displayName: exchanged.displayName,
       status: "ACTIVE" as const,
-      metadata: profile.accountType ? { accountType: profile.accountType } : undefined,
     };
 
     const account = await prisma.instagramAccount.upsert({
-      where: { instagramUserId: profile.id },
+      where: { instagramUserId: exchanged.accountId },
       update: shared,
-      create: { instagramUserId: profile.id, ...shared },
+      create: { instagramUserId: exchanged.accountId, ...shared },
     });
     logOperation({
       requestId,
@@ -176,27 +145,6 @@ export async function GET(request: Request) {
       status: "success",
     });
 
-    try {
-      await subscribeToMessageWebhooks(longLived.accessToken, profile.id);
-      logOperation({
-        requestId,
-        userId: user.id,
-        instagramAccountId: account.id,
-        operation: "instagram_webhook_subscription",
-        status: "success",
-      });
-    } catch (error) {
-      logOperation({
-        requestId,
-        userId: user.id,
-        instagramAccountId: account.id,
-        operation: "instagram_webhook_subscription",
-        status: "failure",
-        errorCode: error instanceof InstagramApiError ? error.category : "WEBHOOK_ERROR",
-      });
-    }
-
-    stage = "audit_log_persist";
     await prisma.auditLog.create({
       data: {
         userId: user.id,
@@ -229,7 +177,7 @@ export async function GET(request: Request) {
       userId: user.id,
       operation: "instagram_oauth_callback",
       status: "failure",
-      errorCode: `${stage}:${category}`,
+      errorCode: category,
       durationMs: Date.now() - startedAt,
     });
     await logInstagramError(user.id, message, category, details);

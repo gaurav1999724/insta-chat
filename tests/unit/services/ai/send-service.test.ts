@@ -23,8 +23,6 @@ vi.mock("@/lib/security/rate-limit", async () => {
   return { ...actual, checkRateLimit };
 });
 
-vi.mock("@/lib/security/encryption", () => ({ decrypt: vi.fn(() => "decrypted-token") }));
-
 const { sendMessage } = vi.hoisted(() => ({ sendMessage: vi.fn() }));
 vi.mock("@/services/instagram/instagram-service", () => ({ sendMessage }));
 
@@ -33,12 +31,11 @@ const { sendManualMessage, SendMessageError } =
 
 const activeConversation = {
   id: "conversation-1",
+  externalConversationId: "contact-1",
   instagramAccount: {
     status: "ACTIVE",
-    accessTokenEncrypted: "ciphertext",
-    instagramUserId: "ig-account-1",
+    instagramUserId: "acc_1",
   },
-  participant: { externalUserId: "contact-1" },
 };
 
 const RECENT_INBOUND = { createdAt: new Date(Date.now() - 60 * 60 * 1000) }; // 1 hour ago
@@ -108,12 +105,7 @@ describe("sendManualMessage", () => {
     const result = await sendManualMessage("conversation-1", "Haan bilkul!", "user-1");
 
     expect(result).toEqual({ messageId: "message-1" });
-    expect(sendMessage).toHaveBeenCalledWith(
-      "decrypted-token",
-      "ig-account-1",
-      "contact-1",
-      "Haan bilkul!",
-    );
+    expect(sendMessage).toHaveBeenCalledWith("acc_1", "contact-1", "Haan bilkul!");
     expect(prismaMock.$transaction).toHaveBeenCalled();
   });
 

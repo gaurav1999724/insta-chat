@@ -193,27 +193,21 @@ model VerificationToken {
 // --- Instagram domain ---
 
 model InstagramAccount {
-  id                   String                 @id @default(cuid())
-  userId               String
-  instagramUserId      String                 @unique
-  // Meta's `/me` on `graph.instagram.com` returns two different ids for the
-  // same account under "Instagram API with Instagram Login": `id` (stored
-  // above, used for all our outbound Graph API calls) and `user_id` (stored
-  // here) — and it's `user_id`, not `id`, that shows up as `entry.id` in
-  // incoming webhook payloads. Without this, the webhook account lookup
-  // silently fails for every real message (confirmed 2026-09-21: webhook
-  // delivered fine, `entry.id` just never matched `instagramUserId`).
-  webhookUserId        String?                @unique
-  username             String
-  displayName          String?
-  profilePictureUrl    String?
-  // Ciphertext only — encrypted with ENCRYPTION_KEY, never sent to the client.
-  accessTokenEncrypted String                 @db.Text
-  tokenExpiresAt       DateTime?
-  status               InstagramAccountStatus @default(ACTIVE)
-  metadata             Json?
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
+  id              String                 @id @default(cuid())
+  userId          String
+  // SocialAPI.AI's own `account_id` (e.g. "acc_...") — switched from Meta's
+  // direct Graph API 2026-09-21 (spec decision, see docs/INSTAGRAM_SETUP.md).
+  // SocialAPI.AI holds the real Meta OAuth token on its side entirely; we
+  // never see or store one, only this opaque account reference, which is
+  // also what its webhook payloads carry as `data.account_id`.
+  instagramUserId String                 @unique
+  username        String
+  displayName     String?
+  profilePictureUrl String?
+  status          InstagramAccountStatus @default(ACTIVE)
+  metadata        Json?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
 
   user          User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   participants  InstagramParticipant[]

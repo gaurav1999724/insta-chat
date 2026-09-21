@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { InstagramWebhookMessagingItem } from "@/lib/instagram/webhook";
+import type { SocialApiDmEvent } from "@/lib/instagram/webhook";
 
 // spec §67: "Instagram webhook → message persistence → conversation lookup
 // → AI generation → draft creation → send queue → Instagram API", with
@@ -25,7 +25,6 @@ type ConversationRecord = {
   lastMessageAt?: Date;
   instagramAccountRecord?: {
     status: string;
-    accessTokenEncrypted: string;
     instagramUserId: string;
   };
   participantExternalUserId?: string;
@@ -224,8 +223,7 @@ function createFakeDb(): FakeDb {
             // something to read, without modeling a whole extra table.
             instagramAccountRecord: {
               status: "ACTIVE",
-              accessTokenEncrypted: "ciphertext",
-              instagramUserId: "ig-account-1",
+              instagramUserId: "acc_1",
             },
             participantExternalUserId: "contact-1",
           };
@@ -395,8 +393,6 @@ vi.mock("@/lib/security/rate-limit", async () => {
   return { ...actual, checkRateLimit };
 });
 
-vi.mock("@/lib/security/encryption", () => ({ decrypt: vi.fn(() => "decrypted-token") }));
-
 const { sendMessage } = vi.hoisted(() => ({ sendMessage: vi.fn() }));
 vi.mock("@/services/instagram/instagram-service", () => ({ sendMessage }));
 
@@ -404,15 +400,22 @@ const { processMessagingItem } = await import("@/services/instagram/webhook-proc
 const { createDraftReply } = await import("@/services/ai/draft-service");
 const { sendApprovedDraft } = await import("@/services/ai/send-service");
 
-function inboundItem(
-  overrides: Partial<InstagramWebhookMessagingItem> = {},
-): InstagramWebhookMessagingItem {
+function inboundItem(overrides: Partial<SocialApiDmEvent["data"]> = {}): SocialApiDmEvent {
   return {
-    sender: { id: "contact-1" },
-    recipient: { id: "account-1" },
-    timestamp: Date.now(),
-    ...overrides,
-  } as InstagramWebhookMessagingItem;
+    event: "dm.received",
+    data: {
+      id: "sapi_dm_default",
+      type: "dm",
+      platform: "instagram",
+      account_id: "acc_1",
+      conversation_id: "contact-1",
+      platform_id: "m_default",
+      author: { id: "contact-1" },
+      content: { text: "Hello" },
+      received_at: new Date().toISOString(),
+      ...overrides,
+    },
+  };
 }
 
 describe("webhook → persistence → AI draft → send → Instagram (spec §67)", () => {
@@ -426,7 +429,7 @@ describe("webhook → persistence → AI draft → send → Instagram (spec §67
     // 1. Instagram webhook delivers an inbound text message.
     const webhookResult = await processMessagingItem(
       "account-1",
-      inboundItem({ message: { mid: "mid.inbound-1", text: "Kal milte hain?" } }),
+      inboundItem({ platform_id: "mid.inbound-1", content: { text: "Kal milte hain?" } }),
     );
     if (!webhookResult.processed) throw new Error("expected message to be processed");
     const db = fakeDb.current!;
@@ -462,8 +465,7 @@ describe("webhook → persistence → AI draft → send → Instagram (spec §67
 
     expect(sendResult).toEqual({ messageId: expect.any(String) });
     expect(sendMessage).toHaveBeenCalledWith(
-      "decrypted-token",
-      "ig-account-1",
+      "acc_1",
       "contact-1",
       "Haan bilkul, kal milte hain!",
     );
@@ -476,7 +478,7 @@ describe("webhook → persistence → AI draft → send → Instagram (spec §67
   it("does not create a duplicate outbound message when the send is retried (spec §29 idempotency)", async () => {
     const webhookResult = await processMessagingItem(
       "account-1",
-      inboundItem({ message: { mid: "mid.inbound-2", text: "Hey" } }),
+      inboundItem({ platform_id: "mid.inbound-2", content: { text: "Hey" } }),
     );
     if (!webhookResult.processed) throw new Error("expected message to be processed");
     const conversationId = fakeDb.current!._debug.messages.get(webhookResult.messageId)

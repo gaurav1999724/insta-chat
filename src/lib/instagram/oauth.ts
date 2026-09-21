@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 import { env } from "@/lib/validation/env";
 
 // Shared between the connect and callback route handlers — must match on
-// both sides for the CSRF state check to work.
+// both sides for the CSRF state check to work. SocialAPI.AI's own managed
+// app performs the real Meta OAuth exchange, but our own `state` cookie
+// still ties the eventual callback back to the InstaMate user who started
+// the connection, independent of whatever SocialAPI does on its side.
 export const INSTAGRAM_OAUTH_STATE_COOKIE = "ig_oauth_state";
 
 export const instagramOAuthStateCookieOptions = {

@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 
+import { ConversationLiveRefresh } from "@/components/conversations/conversation-live-refresh";
 import { ConversationSettingsPanel } from "@/components/conversations/conversation-settings-panel";
 import { ConversationSidebar } from "@/components/conversations/conversation-sidebar";
 import { MessageBubble } from "@/components/conversations/message-bubble";
@@ -39,7 +40,7 @@ export default async function ConversationPage({
     notFound();
   }
 
-  const [chatModes, pendingDraft, memories] = await Promise.all([
+  const [chatModes, pendingDraft, memories, aiConfig] = await Promise.all([
     prisma.chatMode.findMany({
       where: { OR: [{ userId: null }, { userId: user.id }] },
       orderBy: [{ isBuiltIn: "desc" }, { name: "asc" }],
@@ -58,7 +59,17 @@ export default async function ConversationPage({
       orderBy: [{ category: "asc" }, { key: "asc" }],
       select: { id: true, category: true, key: true, value: true, confidence: true },
     }),
+    prisma.aIConfiguration.findUnique({
+      where: { userId: user.id },
+      select: { autoSend: true },
+    }),
   ]);
+
+  // Resolves the same "conversation override, else global default" inherit
+  // rule `maybeAutoRespond()` uses server-side — the composer's quick
+  // toggle always writes an explicit override, but its initial state
+  // should reflect what's actually in effect right now.
+  const effectiveAutoSend = conversation.settings?.autoSend ?? aiConfig?.autoSend ?? false;
 
   // Best-effort read-tracking (spec §33 "unread indicator") — viewing the
   // thread marks it read. Not gating anything on the result of this write.
@@ -74,14 +85,15 @@ export default async function ConversationPage({
 
   return (
     <div className="grid h-full grid-cols-1 md:grid-cols-[300px_1fr]">
+      <ConversationLiveRefresh />
       <ConversationSidebar
         userId={user.id}
         status={status}
         search={search}
         activeConversationId={conversationId}
       />
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px]">
-        <main className="flex flex-col">
+      <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[1fr_320px]">
+        <main className="flex h-full min-h-0 flex-col">
           <div className="flex items-center justify-between border-b p-3">
             <div>
               <p className="text-sm font-semibold">{displayName}</p>
@@ -92,7 +104,7 @@ export default async function ConversationPage({
             </div>
           </div>
 
-          <ScrollArea className="flex-1 p-4">
+          <ScrollArea className="min-h-0 flex-1 p-4">
             <div className="space-y-2">
               {conversation.messages.length === 0 ? (
                 <p className="text-center text-sm text-muted-foreground">
@@ -106,9 +118,10 @@ export default async function ConversationPage({
             </div>
           </ScrollArea>
 
-          <div className="border-t p-3">
+          <div className="sticky bottom-0 z-10 border-t bg-background p-3">
             <MessageComposer
               conversationId={conversation.id}
+              initialAutoSend={effectiveAutoSend}
               initialDraft={
                 pendingDraft
                   ? {

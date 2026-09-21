@@ -1,223 +1,185 @@
 # Instagram Setup
 
-Status: **Phase 4 implemented** (connection/account management), **sending
-implemented Phase 9**. Historical conversation sync (`GET
-/{ig-user-id}/conversations`) is still not implemented.
+**Provider switched 2026-09-21: direct Meta Graph API → SocialAPI.AI**
+(`docs.social-api.ai`), a third-party aggregator. This replaced a brief,
+same-day detour through CollectAPI (which drove a real logged-in Instagram
+session via username/password and was rejected for that reason — see git
+history / the conversation this was decided in). SocialAPI.AI is a
+materially different, lower-risk integration.
 
-Verified against Meta's current developer documentation on **2026-09-17**
-(spec §92 requires this — Instagram API capabilities and permissions
-change, and this integration must not be built from stale assumptions).
-Sources are linked in each section below.
+## What kind of integration this is
 
-## 1. Meta Developer App
+SocialAPI.AI is **not an official Meta partnership**, but it connects
+Instagram accounts through a **real Meta OAuth consent screen**, using its
+own "managed" developer app — no Meta Developer App, App Review, or
+Instagram App ID/Secret is needed on our side at all. Concretely:
 
-1. Create an app at [developers.facebook.com](https://developers.facebook.com/)
-   (type: "Business" or "Consumer" — either supports adding the Instagram
-   product).
-2. Add the **Instagram** product to the app, specifically **"Instagram API
-   with Instagram Login"** (also called "Business Login for Instagram") —
-   NOT the deprecated Instagram Basic Display API (shut down December 4, 2024) and not the Facebook-Login-based Instagram API (that path requires
-   linking a Facebook Page, which this app does not need).
-3. Note the app's **Instagram App ID** and **Instagram App Secret** — these
-   are different from the app's top-level Facebook App ID/Secret. They go
-   in `META_APP_ID` / `META_APP_SECRET`.
+- The account owner authorizes through Instagram's own real login/consent
+  flow (redirected via SocialAPI.AI's managed OAuth app) — never asked for
+  a raw username/password by this app or by SocialAPI.AI.
+- The actual Meta OAuth token lives entirely on SocialAPI.AI's
+  infrastructure; this app only ever stores their opaque `account_id`.
+- Webhooks are properly HMAC-signed (`X-SocialAPI-Signature-V2`) — unlike
+  the briefly-tried CollectAPI integration, which had no signing at all.
 
-Reference: [Business Login for Instagram — Meta for Developers](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/business-login)
+**Real risk that remains:** this app's Instagram access still depends on a
+third party's continued reliability and trustworthiness — if SocialAPI.AI
+has an outage, changes its API, or is compromised, this integration is
+affected. That's a materially smaller risk than credential harvesting, but
+it's not zero, and it's worth knowing before connecting a production
+account.
+
+## 1. SocialAPI.AI account
+
+1. Sign up at [social-api.ai](https://social-api.ai/) and get your API key
+   at their dashboard — it goes in `SOCIALAPI_TOKEN`.
+2. One API key authenticates every call for your whole workspace; by
+   default it has access to every connected account (scoped keys are
+   possible via their `/keys` endpoints but not used by this app).
+
+Reference: [SocialAPI.AI docs](https://docs.social-api.ai/)
 
 ## 2. Instagram account requirements
 
-- Must be an Instagram **Professional account** (Business or Creator) — a
-  personal account cannot authorize this flow.
-- No linked Facebook Page is required for this flow ("Instagram API with
-  Instagram Login" is the direct login path).
+- Any Instagram account that can complete Meta's real OAuth consent screen
+  works — no special account type is documented as required by
+  SocialAPI.AI itself, but Meta's own Instagram Login rules still apply
+  underneath (e.g. a Professional account is generally needed for
+  messaging permissions).
 
-## 3. Facebook/Meta configuration where required
+## 3. One-time webhook registration (do this once, manually)
 
-Not required for this flow. If a future phase needs Facebook-Page-linked
-features (e.g. cross-posting), that would use a separate "Instagram API
-with Facebook Login" integration and is out of scope here.
+SocialAPI.AI's webhook is registered **once per workspace**, not per
+connected account — unlike Meta's per-app webhook config or CollectAPI's
+per-account config. Register it with a direct API call before connecting
+any Instagram account:
 
-## 4. OAuth/authentication configuration
+```bash
+curl -X POST https://api.social-api.ai/v1/webhooks \
+  -H "Authorization: Bearer $SOCIALAPI_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://YOUR_PUBLIC_URL/api/webhooks/instagram",
+    "events": ["dm.received", "dm.sent"]
+  }'
+```
+
+The response includes a `secret` field, shown **only this once** — copy it
+into `SOCIALAPI_WEBHOOK_SECRET` immediately. If you lose it, delete the
+webhook endpoint and create a new one.
+
+## 4. Connect flow
 
 Implemented in `src/services/instagram/instagram-service.ts` +
-`src/app/api/instagram/connect/route.ts` + `src/app/api/instagram/callback/route.ts`.
+`src/app/api/instagram/connect/route.ts` + `src/app/api/instagram/callback/route.ts`
+— structurally the same redirect-based OAuth flow the original direct-Meta
+integration used (CSRF `state` cookie, `src/lib/instagram/oauth.ts`), just
+with SocialAPI.AI's endpoints in the middle:
 
-Flow:
+1. `GET /api/instagram/connect` — generates a random CSRF `state`, stores
+   it in an `httpOnly` cookie, calls `POST /accounts/connect` with
+   `{platform: "instagram", redirect_uri: {NEXTAUTH_URL}/api/instagram/callback, state}`,
+   and redirects the browser to the returned `auth_url` (SocialAPI.AI's
+   managed OAuth flow, which itself redirects to Instagram's real consent
+   screen).
+2. The user approves on Instagram's actual consent screen.
+3. Instagram/SocialAPI.AI redirects back to
+   `GET /api/instagram/callback?code=...&state=...`.
+4. The callback verifies `state` against the cookie, then calls
+   `POST /oauth/exchange` with `{code, platform: "instagram", metadata: {redirect_uri, state}}`
+   to finalize the connection, upserts `InstagramAccount` (`instagramUserId`
+   holds SocialAPI's `account_id`), writes an `AuditLog` row
+   (`ACCOUNT_CONNECTED`), and redirects to `/settings?instagram=connected`.
 
-1. `GET /api/instagram/connect` — generates a random CSRF `state`, stores it
-   in an `httpOnly` cookie, and redirects the browser to
-   `https://www.instagram.com/oauth/authorize` with `client_id`,
-   `redirect_uri`, `response_type=code`, `scope`, and `state`.
-2. The user approves on Instagram's consent screen.
-3. Instagram redirects back to `GET /api/instagram/callback?code=...&state=...`
-   (or `?error=...` if the user declined).
-4. The callback verifies `state` against the cookie, then:
-   - exchanges `code` for a short-lived token
-     (`POST https://api.instagram.com/oauth/access_token`)
-   - exchanges that for a 60-day long-lived token
-     (`GET https://graph.instagram.com/access_token?grant_type=ig_exchange_token`)
-   - fetches the account's profile (`GET https://graph.instagram.com/me`)
-   - encrypts the long-lived token (`src/lib/security/encryption.ts`,
-     AES-256-GCM keyed from `ENCRYPTION_KEY`) and upserts `InstagramAccount`
-   - writes an `AuditLog` row (`ACCOUNT_CONNECTED`)
-   - redirects to `/settings?instagram=connected` (or `denied`/`error`/
-     `not_configured`/`already_connected`)
+No per-account webhook subscription call is needed here (unlike the
+original Meta integration's `subscribeToMessageWebhooks()`) — the
+one-time, workspace-level webhook from step 3 above already covers every
+connected account.
 
-**Correction (Phase 9):** Phase 4 claimed `graph.instagram.com` was
-entirely unversioned. That was wrong, or at least too broad — verified
-again on 2026-09-17 while researching the Send API: the **token
-management** endpoints (`/access_token`, `/refresh_access_token`) do work
-unversioned, but the **content/messaging** endpoints (`/me`,
-`/{id}/messages`) use the standard `/vNN.N/` path, confirmed directly from
-Meta's own Send Messages docs example
-(`https://graph.instagram.com/v25.0/<IG_ID>/messages`). `getProfile()` and
-`sendMessage()` both now build their URL as
-`` `${GRAPH_HOST}/${env.META_GRAPH_API_VERSION}/...` ``; only the two
-token-management calls stay unversioned.
+## 5. Sending messages
 
-Reference: [Access Token — Instagram Platform](https://developers.facebook.com/docs/instagram-platform/reference/access_token/),
-[Refresh Access Token — Instagram Platform](https://developers.facebook.com/docs/instagram-platform/reference/refresh_access_token/),
-[Send Messages — Instagram Platform](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api/)
-
-## 4a. Sending messages (implemented Phase 9, manual sending added Phase 10)
-
-`InstagramService.sendMessage(accessToken, senderInstagramUserId,
-recipientInstagramUserId, text)`:
+`sendMessage(accountId, conversationId, text)` in `instagram-service.ts`:
 
 ```
-POST https://graph.instagram.com/{META_GRAPH_API_VERSION}/{senderInstagramUserId}/messages
-Authorization: Bearer {accessToken}
+POST https://api.social-api.ai/v1/inbox/conversations/{conversationId}/messages
+Authorization: Bearer {SOCIALAPI_TOKEN}
 Content-Type: application/json
 
-{ "recipient": { "id": "{recipientInstagramUserId}" }, "message": { "text": "{text}" } }
+{ "account_id": "{accountId}", "text": "{text}" }
 ```
 
-Success response: `{ "recipient_id": "...", "message_id": "..." }` —
-`message_id` becomes `Message.externalMessageId` for the new outbound row.
+`conversationId` is SocialAPI's own real conversation id (stored as
+`Conversation.externalConversationId`) — unlike Meta/CollectAPI, this
+provider gives a distinct thread id separate from the participant's own
+user id. Success response: `{ "success": true, "message_id": "..." }` —
+`message_id` becomes `Message.externalMessageId`.
 
-**The 24-hour messaging window (spec §41):** your app has 24 hours from
-the contact's last inbound message to reply freely. Meta's only official
-extension is the `human_agent` message tag — up to 7 days — but that tag
-is explicitly for **a real human replying manually**; Meta's own policy
-says automating a send with that tag causes API errors/policy violations.
-Using it here to let _our_ automation slip past the 24-hour window would
-be exactly the "bypass a platform limitation through an unofficial path"
-spec §41 forbids — so **this app never uses the `human_agent` tag**, full
-stop. `src/lib/instagram/send-eligibility.ts`'s `isWithinMessagingWindow()`
-is the single gate every send path checks before calling `sendMessage()`:
-the "Send" button on an AI-approved draft, the automatic `instagram-send`
-queue worker, **and** (Phase 10) a plain manually-typed message — all
-three go through the exact same window check, with no special case for a
-human typing directly. If the window has closed, the send is refused with
-spec §41's exact message ("This action isn't available through the
-currently supported Instagram API") rather than attempted — even for a
-human-authored message, since the 24-hour rule is Meta's platform
-constraint on the _API call_, not on who wrote the text.
+**The 24-hour messaging window still applies.** Since this integration
+goes through real Meta OAuth and (presumably) real Meta Business Messaging
+permissions underneath, Meta's standard 24-hour customer-service window
+restriction is back in effect — `src/lib/instagram/send-eligibility.ts`
+still enforces it exactly as the original direct-Meta integration did.
+(This was correctly *not* enforced during the brief CollectAPI detour,
+since that provider drove a real client session with no such platform
+restriction — but it applies again here.)
 
-Reference: [Instagram Messaging API 24-Hour Window — key details](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api/)
+## 6. Webhook configuration
 
-## 5. Webhook configuration
+See `docs/WEBHOOKS.md` for the full payload/verification details. Every
+request is HMAC-SHA256 signed (`X-SocialAPI-Signature-V2` = HMAC of
+`{timestamp}.{rawBody}` keyed by the secret from step 3, plus
+`X-SocialAPI-Timestamp` for replay protection) — verified before any
+parsing, same security posture as the original Meta integration had.
 
-Implemented Phase 5 — see `docs/WEBHOOKS.md`. `META_WEBHOOK_VERIFY_TOKEN`
-is in `.env.example`.
-
-## 6. Required permissions
-
-Only what's actually used, per spec §40 ("do not request unnecessary
-permissions"):
-
-- `instagram_business_basic` — required baseline scope for any Instagram
-  Login integration.
-- `instagram_business_manage_messages` — required to read/send DMs
-  (Phase 5+). Requested now so the one-time OAuth consent already covers
-  Phase 5 without asking the user to reconnect.
-
-Not requested: `instagram_business_content_publish`,
-`instagram_business_manage_comments` — this app does not publish content or
-manage comments.
-
-## 7. Redirect URL
-
-Register exactly (must match `NEXTAUTH_URL` + this path, no trailing slash
-differences):
+## 7. Environment variables
 
 ```
-{NEXTAUTH_URL}/api/instagram/callback
+SOCIALAPI_TOKEN=""            # from https://social-api.ai
+SOCIALAPI_WEBHOOK_SECRET=""   # from POST /webhooks (§3 above), shown once
 ```
 
-Local dev: `http://localhost:3000/api/instagram/callback`.
-
-## 8. Webhook URL
-
-Reserved for Phase 5: `{NEXTAUTH_URL}/api/webhooks/instagram`.
-
-## 9. Environment variables
-
-Already in `.env.example`:
-
-```
-META_APP_ID=
-META_APP_SECRET=
-META_GRAPH_API_VERSION=v26.0
-META_WEBHOOK_VERIFY_TOKEN=
-```
-
-All are optional at boot (`env.ts`) so the app runs before Instagram is
+Both optional at boot (`env.ts`) so the app runs before Instagram is
 configured — `/api/instagram/connect` fails gracefully
-(`?instagram=not_configured`) rather than crashing if they're unset.
+(`?instagram=not_configured`) rather than crashing if `SOCIALAPI_TOKEN` is
+unset.
 
-## 10. Development testing
+No longer used (removed 2026-09-21): `META_APP_ID`, `META_APP_SECRET`,
+`META_GRAPH_API_VERSION`, `META_WEBHOOK_VERIFY_TOKEN`, `ENCRYPTION_KEY`
+(no per-account token to encrypt at rest — SocialAPI.AI holds the actual
+Meta OAuth token, we only hold their `account_id`), and the briefly-added
+`COLLECTAPI_TOKEN`/`COLLECTAPI_WEBHOOK_SECRET`.
 
-1. Fill in `META_APP_ID`/`META_APP_SECRET` in `.env` from a Meta app in
-   development mode.
-2. Add your own Instagram account as an "Instagram tester" in the app's
-   dashboard and accept the tester invite from the Instagram app/site — apps
-   in development mode can only authorize accounts explicitly added as
-   testers.
-3. Register the local redirect URL (§7) in the app's Instagram product
-   settings.
+## 8. Development testing
+
+1. Fill in `SOCIALAPI_TOKEN` in `.env`.
+2. Run a local HTTPS tunnel (e.g. ngrok) pointed at `localhost:3000`, set
+   `NEXTAUTH_URL` to that tunnel's URL.
+3. Register the webhook once per §3 above, using the tunnel URL, and fill
+   in `SOCIALAPI_WEBHOOK_SECRET`.
 4. Sign in to InstaMate, go to Settings, click "Connect Instagram."
 
-## 11. Production configuration
+## 9. Production configuration
 
-- Redirect URL must be the production `NEXTAUTH_URL` + `/api/instagram/callback`,
-  served over HTTPS (Instagram requires HTTPS redirect URIs in production).
-- `ENCRYPTION_KEY` must be a strong, unique secret distinct from any
-  development value.
+- `NEXTAUTH_URL` must be the real production HTTPS URL — used both as the
+  OAuth `redirect_uri` and, indirectly, for constructing the webhook URL
+  you register in §3.
+- Re-register the webhook (§3) pointing at the production URL if it was
+  only set up for a dev tunnel — the URL isn't automatically migrated.
+- `SOCIALAPI_WEBHOOK_SECRET` must be a strong, unique secret distinct from
+  any development value.
 
-## 12. App review requirements where applicable
+## 10. API limitations
 
-- `instagram_business_basic` is available in development mode without
-  review for tester accounts.
-- `instagram_business_manage_messages` requires **App Review** with a
-  verified Meta Business portfolio before it works for accounts that
-  aren't added as testers/developers on the app. Budget real time for this
-  before Phase 5 (receiving)/Phase 9 (sending) need it in production.
-
-## 13. API limitations
-
-- **Token lifetime:** long-lived tokens expire in 60 days and must be
-  refreshed (`graph.instagram.com/refresh_access_token`) at least every 60
-  days, and only after they're 24 hours old. Still no refresh job as of
-  Phase 9 (no scheduled/periodic job infra exists — the 3 queues that do
-  exist are all triggered by webhook events, not a clock) —
-  `refreshLongLivedToken()` in `instagram-service.ts` is ready for one
-  whenever a scheduling mechanism is added (Phase 12, or a `cron`-style
-  addition to Phase 9's queue infra).
+- **Rate limits:** 60–1,200 requests/minute depending on connected-account
+  count (documented by SocialAPI.AI); 429 responses include `Retry-After`.
+  Not yet implemented as client-side backoff in this app — worth adding if
+  volume grows.
 - **One account per Instagram user, globally:** `InstagramAccount.instagramUserId`
-  is unique across all InstaMate users — the callback route explicitly
-  rejects connecting an Instagram account that's already linked to a
+  (SocialAPI's `account_id`) is unique across all InstaMate users — the
+  callback route rejects connecting an account already linked to a
   different InstaMate user (spec §74).
-- **Outbound message initiation (spec §41): implemented Phase 9.** The
-  24-hour messaging window is enforced by
-  `isWithinMessagingWindow()` before every send attempt, automated or
-  manual; a send outside the window is refused with spec §41's exact
-  message rather than attempted through the `human_agent` tag workaround
-  (see §4a above). Rate limiting (the other §59 auto-send precondition) is
-  not implemented — that's Phase 12.
-- **No remote token revocation on disconnect:** disconnecting in InstaMate
-  wipes our stored (encrypted) copy of the token and marks the account
-  `DISCONNECTED`, but there is no documented Instagram-Login equivalent of
-  Facebook's `DELETE /me/permissions` to revoke the token on Meta's side.
-  The user can also revoke access directly from their Instagram app's
-  "Apps and Websites" settings.
+- **No documented per-account disconnect/revoke endpoint:** disconnecting
+  in InstaMate marks the account `DISCONNECTED` locally only — same
+  limitation the original Meta integration had. The user can revoke access
+  from SocialAPI.AI's own dashboard or Instagram's "Apps and Websites"
+  settings.

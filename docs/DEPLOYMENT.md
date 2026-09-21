@@ -22,8 +22,8 @@ Two services: `app` (this Next.js app) and `postgres` (16-alpine).
 
 ```bash
 cp .env.docker.example .env.docker
-# edit .env.docker: set POSTGRES_PASSWORD, NEXTAUTH_SECRET, ENCRYPTION_KEY
-# at minimum (see .env.docker.example's comments for how to generate each)
+# edit .env.docker: set POSTGRES_PASSWORD, NEXTAUTH_SECRET at minimum
+# (see .env.docker.example's comments for how to generate each)
 
 docker compose --env-file .env.docker up -d postgres
 
@@ -87,9 +87,8 @@ Same variables as `.env.example`, with production-specific notes:
 | `NEXTAUTH_SECRET`                                               | Generate with `npx auth secret`; a distinct value per environment (dev/staging/prod), never reused.                                                                                                                                                                                             |
 | `NEXTAUTH_URL`                                                  | **Must** be the real `https://` URL. Auth.js's cookie `secure` flag and the Instagram OAuth state cookie's `secure` flag (`src/lib/instagram/oauth.ts`) both key off this starting with `https://` — an `http://` value in production means session/CSRF-state cookies are sent over plaintext. |
 | `EMAIL_SERVER` / `EMAIL_FROM`                                   | Must both be set in production — leaving `EMAIL_SERVER` unset makes sign-in links print to the server's stdout/logs instead of emailing them, which is a deliberate **local-dev-only** fallback (`src/lib/auth/auth.ts`), not something acceptable once real users exist.                       |
-| `META_APP_ID` / `META_APP_SECRET` / `META_WEBHOOK_VERIFY_TOKEN` | From your Meta developer app — see `docs/INSTAGRAM_SETUP.md`. The webhook needs a real public HTTPS URL to register with Meta (this dev environment has never had one — see `PROJECT_ANALYSIS.md` §10).                                                                                         |
+| `SOCIALAPI_TOKEN` / `SOCIALAPI_WEBHOOK_SECRET`                  | From [social-api.ai](https://social-api.ai) — see `docs/INSTAGRAM_SETUP.md`. The webhook is registered once, globally, via a manual `POST /webhooks` call against the real production URL (not automatically migrated from a dev tunnel).                                                     |
 | `GEMINI_API_KEY`                                                | A real key with billing configured — see `docs/GEMINI_SETUP.md` for cost estimates.                                                                                                                                                                                                             |
-| `ENCRYPTION_KEY`                                                | 32+ random characters (`openssl rand -base64 32`), used to encrypt stored Instagram access tokens (spec §49). Losing this key makes every already-connected Instagram account's stored token permanently undecryptable — back it up as carefully as the database itself.                        |
 
 **Never commit `.env` or `.env.docker` with real values** — both are
 gitignored (`.gitignore`'s `.env*` pattern, with explicit `!.env.example`/

@@ -2,6 +2,7 @@ import crypto, { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { requireUser } from "@/lib/auth/require-user";
+import { prisma } from "@/lib/db/prisma";
 import { InstagramApiError } from "@/lib/instagram/errors";
 import {
   INSTAGRAM_OAUTH_STATE_COOKIE,
@@ -10,7 +11,8 @@ import {
 } from "@/lib/instagram/oauth";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { logOperation } from "@/lib/logging/logger";
-import { getAuthorizationUrl } from "@/services/instagram/instagram-service";
+import { env } from "@/lib/validation/env";
+import { getConnectAuthUrl } from "@/services/instagram/instagram-service";
 
 // Plain browser navigation (an <a href> in Settings), not a fetch/mutation —
 // GET is the correct method for a redirect the user's browser follows.
@@ -36,12 +38,40 @@ export async function GET() {
     return settingsRedirect("rate_limited");
   }
 
+  if (!env.SOCIALAPI_TOKEN) {
+    logOperation({
+      requestId,
+      userId: user.id,
+      operation: "instagram_connect",
+      status: "failure",
+      errorCode: "not_configured",
+      durationMs: Date.now() - startedAt,
+    });
+    return settingsRedirect("not_configured");
+  }
+
   try {
     const state = crypto.randomBytes(16).toString("hex");
-    const response = NextResponse.redirect(getAuthorizationUrl(state));
+    const result = await getConnectAuthUrl(state);
+    if (result.kind !== "auth_url") {
+      // Instagram always returns the OAuth-redirect shape — SocialAPI's
+      // "direct" (no-redirect) shape is for other platform types, so this
+      // would only happen if that ever changed on their side.
+      throw new InstagramApiError(
+        "Instagram connection did not return an OAuth redirect as expected.",
+        "INSTAGRAM_AUTH_ERROR",
+      );
+    }
+    const response = NextResponse.redirect(result.authUrl);
+    // Store whatever state SocialAPI.AI actually echoes back (`result.state`),
+    // not the value we originally sent (`state`) — its `/accounts/connect`
+    // response can return a different opaque state than what was submitted
+    // (confirmed 2026-09-21: this mismatch caused every real connect
+    // attempt to fail the callback's code/state check with a state that
+    // could never match, even on a legitimate, unmodified round-trip).
     response.cookies.set(
       INSTAGRAM_OAUTH_STATE_COOKIE,
-      state,
+      result.state,
       instagramOAuthStateCookieOptions,
     );
     logOperation({
@@ -53,25 +83,21 @@ export async function GET() {
     });
     return response;
   } catch (error) {
-    if (error instanceof InstagramApiError) {
-      logOperation({
-        requestId,
-        userId: user.id,
-        operation: "instagram_connect",
-        status: "failure",
-        errorCode: "not_configured",
-        durationMs: Date.now() - startedAt,
-      });
-      return settingsRedirect("not_configured");
-    }
+    const errorCode = error instanceof InstagramApiError ? error.category : "unexpected_error";
     logOperation({
       requestId,
       userId: user.id,
       operation: "instagram_connect",
       status: "failure",
-      errorCode: "unexpected_error",
+      errorCode,
       durationMs: Date.now() - startedAt,
     });
+    if (error instanceof InstagramApiError) {
+      await prisma.aPIError.create({
+        data: { category: error.category, message: error.message, userId: user.id },
+      });
+      return settingsRedirect("error");
+    }
     throw error;
   }
 }

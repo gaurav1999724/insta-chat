@@ -1,313 +1,259 @@
 import { env } from "@/lib/validation/env";
 import { InstagramApiError } from "@/lib/instagram/errors";
+import { logOperation } from "@/lib/logging/logger";
 
-// Verified against Meta's "Instagram API with Instagram Login" docs
-// (developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login)
-// on 2026-09-17 — see docs/INSTAGRAM_SETUP.md for sources and details.
-// This is the direct Instagram Business Login flow (no Facebook Page
-// required), which is what spec §7/§37 calls for.
-const AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize";
-const SHORT_LIVED_TOKEN_URL = "https://api.instagram.com/oauth/access_token";
-const GRAPH_HOST = "https://graph.instagram.com";
-// Verified 2026-09-17 (see docs/INSTAGRAM_SETUP.md): the OAuth/token
-// endpoints on this host (`/access_token`, `/refresh_access_token`) work
-// unversioned, but the content/messaging endpoints (`/me`, `/{id}/messages`)
-// use the standard `/vNN.N/` path — corrected from an earlier, too-broad
-// "this host is unversioned" assumption. Always include the version there.
-
-// Only what Phase 4/5/9 need so far. getConversations()/getMessages()
-// (historical sync) aren't implemented — spec §37 lists the full method
-// set, added incrementally.
-const SCOPES = ["instagram_business_basic", "instagram_business_manage_messages"];
+// Switched from direct Meta Graph API access to SocialAPI.AI
+// (docs.social-api.ai) on 2026-09-21 — SocialAPI.AI is a third-party
+// aggregator, not an official Meta partnership, but it drives the
+// connection through a real Meta OAuth consent screen using its own
+// "managed" developer app (no Meta Developer App/App Review needed on our
+// side) rather than harvesting the account's username/password like the
+// briefly-tried CollectAPI integration did. The actual Meta OAuth token
+// lives entirely on SocialAPI.AI's infrastructure; we only ever hold their
+// opaque `account_id`.
+const BASE_URL = "https://api.social-api.ai/v1";
 
 export const INSTAGRAM_CALLBACK_PATH = "/api/instagram/callback";
 
-// Meta's edge/WAF has been observed returning a silent HTTP 200 with an
-// empty JSON body (instead of a real OAuthException) for token-exchange
-// calls made from Vercel's serverless IPs when the request looks
-// automated — undici's default fetch sends no `User-Agent`/`Accept`.
-// Always send both, and force `no-store` so nothing in the request path
-// can serve a cached response for what must always be a fresh call.
-const META_FETCH_HEADERS = {
-  "User-Agent": "InstaMate/1.0 (+https://www.instagram.com/oauth/authorize)",
-  Accept: "application/json",
-};
-
-function metaDiagnosticHeaders(response: Response): Record<string, string | null> {
-  return {
-    contentType: response.headers.get("content-type"),
-    contentLength: response.headers.get("content-length"),
-    fbTraceId: response.headers.get("x-fb-trace-id"),
-    via: response.headers.get("via"),
-    server: response.headers.get("server"),
-  };
-}
-
-function requireAppCredentials(): { appId: string; appSecret: string } {
-  if (!env.META_APP_ID || !env.META_APP_SECRET) {
+function requireToken(): string {
+  if (!env.SOCIALAPI_TOKEN) {
     throw new InstagramApiError(
       "Instagram connection is not configured on this server.",
       "INSTAGRAM_AUTH_ERROR",
     );
   }
+  return env.SOCIALAPI_TOKEN;
+}
 
-  return { appId: env.META_APP_ID, appSecret: env.META_APP_SECRET };
+function authHeaders(): HeadersInit {
+  return {
+    Authorization: `Bearer ${requireToken()}`,
+    "Content-Type": "application/json",
+  };
 }
 
 function getRedirectUri(): string {
   return new URL(INSTAGRAM_CALLBACK_PATH, env.NEXTAUTH_URL).toString();
 }
 
-export function getAuthorizationUrl(state: string): string {
-  const { appId } = requireAppCredentials();
-
-  const url = new URL(AUTHORIZE_URL);
-  url.searchParams.set("client_id", appId);
-  url.searchParams.set("redirect_uri", getRedirectUri());
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", SCOPES.join(","));
-  url.searchParams.set("state", state);
-
-  return url.toString();
+function diagnosticDetails(response: Response, body: unknown) {
+  return { httpStatus: response.status, httpStatusText: response.statusText, body };
 }
 
-type ShortLivedTokenResult = {
-  accessToken: string;
-  instagramUserId: string;
-  permissions: string[];
-};
+// Every SocialAPI.AI request/response gets logged. Unlike CollectAPI's
+// `addInstagram`, none of these request bodies carry a raw password —
+// OAuth codes/tokens are opaque, short-lived, and specific to one
+// exchange, but redact them anyway as defense in depth.
+function redactSocialApiPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSocialApiPayload);
 
-export async function exchangeCodeForShortLivedToken(
-  code: string,
-): Promise<ShortLivedTokenResult> {
-  const { appId, appSecret } = requireAppCredentials();
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        /^code$/i.test(key) ? "[REDACTED]" : redactSocialApiPayload(entry),
+      ]),
+    );
+  }
 
-  const body = new URLSearchParams({
-    client_id: appId,
-    client_secret: appSecret,
-    grant_type: "authorization_code",
-    redirect_uri: getRedirectUri(),
-    code,
+  return value;
+}
+
+async function callSocialApi(
+  operation: string,
+  path: string,
+  init: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: Record<string, unknown> } = {},
+): Promise<{ response: Response; json: unknown }> {
+  const method = init.method ?? "GET";
+
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method,
+    headers: authHeaders(),
+    body: init.body ? JSON.stringify(init.body) : undefined,
+  });
+  const json = await response.json().catch(() => null);
+
+  logOperation({
+    operation: `socialapi.${operation}`,
+    status: response.ok ? "success" : "failure",
+    errorCode: response.ok ? undefined : `http_${response.status}`,
+    requestBody: {
+      method,
+      url: `${BASE_URL}${path}`,
+      body: init.body ? redactSocialApiPayload(init.body) : undefined,
+    },
+    responseBody: redactSocialApiPayload(json),
   });
 
-  const response = await fetch(SHORT_LIVED_TOKEN_URL, {
+  return { response, json };
+}
+
+type ConnectResult =
+  | { kind: "auth_url"; authUrl: string; state: string }
+  | { kind: "connected"; accountId: string; username: string; displayName?: string };
+
+// `POST /accounts/connect` — for Instagram this always returns the 202
+// "auth_url" shape (the 201 "direct" shape is for platforms that don't
+// need an OAuth redirect, e.g. an API-key-based connection). Redirect the
+// user's browser to `authUrl`; SocialAPI's own managed app completes the
+// real Meta OAuth consent, then redirects back to `redirectUri` (our own
+// callback route) with a `code`/`state` pair for `exchangeOAuthCode()`.
+export async function getConnectAuthUrl(state: string): Promise<ConnectResult> {
+  const { response, json } = await callSocialApi("accounts.connect", "/accounts/connect", {
     method: "POST",
-    body,
-    headers: META_FETCH_HEADERS,
-    cache: "no-store",
+    body: { platform: "instagram", redirect_uri: getRedirectUri(), state },
   });
-  const json = await response.json().catch(() => null);
-  // Instagram Login returns token fields at the top level. Keep accepting
-  // the older nested shape for compatibility with existing Meta responses.
-  const entry = json?.data?.[0] ?? json;
+  const body = json as
+    | { auth_url?: string; state?: string; account_id?: string; username?: string; display_name?: string }
+    | null;
 
-  if (!response.ok || !entry?.access_token || !entry?.user_id) {
-    throw new InstagramApiError(
-      "Instagram rejected the authorization code.",
-      "INSTAGRAM_AUTH_ERROR",
-      {
-        httpStatus: response.status,
-        httpStatusText: response.statusText,
-        headers: metaDiagnosticHeaders(response),
-        body: json,
-      },
-    );
+  if (response.status === 202 && body?.auth_url) {
+    return { kind: "auth_url", authUrl: body.auth_url, state: body.state ?? state };
+  }
+  if (response.status === 201 && body?.account_id && body?.username) {
+    return {
+      kind: "connected",
+      accountId: body.account_id,
+      username: body.username,
+      displayName: body.display_name,
+    };
   }
 
-  return {
-    accessToken: entry.access_token,
-    instagramUserId: String(entry.user_id),
-    permissions:
-      typeof entry.permissions === "string"
-        ? entry.permissions.split(",")
-        : Array.isArray(entry.permissions)
-          ? entry.permissions
-          : [],
-  };
-}
-
-type LongLivedTokenResult = { accessToken: string; expiresInSeconds: number };
-
-export async function exchangeForLongLivedToken(
-  shortLivedAccessToken: string,
-): Promise<LongLivedTokenResult> {
-  const { appSecret } = requireAppCredentials();
-
-  const url = new URL(`${GRAPH_HOST}/access_token`);
-  url.searchParams.set("grant_type", "ig_exchange_token");
-  url.searchParams.set("client_secret", appSecret);
-  url.searchParams.set("access_token", shortLivedAccessToken);
-
-  const response = await fetch(url, { headers: META_FETCH_HEADERS, cache: "no-store" });
-  const json = await response.json().catch(() => null);
-
-  if (!response.ok || !json?.access_token) {
-    throw new InstagramApiError(
-      "Failed to exchange the Instagram token for a long-lived one.",
-      "INSTAGRAM_AUTH_ERROR",
-      {
-        httpStatus: response.status,
-        httpStatusText: response.statusText,
-        headers: metaDiagnosticHeaders(response),
-        body: json,
-      },
-    );
-  }
-
-  return { accessToken: json.access_token, expiresInSeconds: json.expires_in };
-}
-
-// Not called from anywhere yet — no scheduled job exists until Phase 9/12.
-// Long-lived tokens last 60 days and can be refreshed once they're at least
-// 24 hours old; this is here so that job has something to call.
-export async function refreshLongLivedToken(
-  longLivedAccessToken: string,
-): Promise<LongLivedTokenResult> {
-  const url = new URL(`${GRAPH_HOST}/refresh_access_token`);
-  url.searchParams.set("grant_type", "ig_refresh_token");
-  url.searchParams.set("access_token", longLivedAccessToken);
-
-  const response = await fetch(url, { headers: META_FETCH_HEADERS, cache: "no-store" });
-  const json = await response.json().catch(() => null);
-
-  if (!response.ok || !json?.access_token) {
-    throw new InstagramApiError(
-      "Failed to refresh the Instagram access token.",
-      "INSTAGRAM_AUTH_ERROR",
-      {
-        httpStatus: response.status,
-        httpStatusText: response.statusText,
-        headers: metaDiagnosticHeaders(response),
-        body: json,
-      },
-    );
-  }
-
-  return { accessToken: json.access_token, expiresInSeconds: json.expires_in };
-}
-
-type InstagramProfile = {
-  id: string;
-  // The id Meta actually puts in `entry.id` on incoming webhook payloads —
-  // confirmed 2026-09-21 to differ from `id` above for the same account.
-  // See the `webhookUserId` column comment in schema.prisma.
-  webhookUserId: string;
-  username: string;
-  accountType?: string;
-  profilePictureUrl?: string;
-};
-
-export async function getProfile(accessToken: string): Promise<InstagramProfile> {
-  const url = new URL(`${GRAPH_HOST}/${env.META_GRAPH_API_VERSION}/me`);
-  url.searchParams.set("fields", "id,user_id,username,account_type,profile_picture_url");
-  url.searchParams.set("access_token", accessToken);
-
-  const response = await fetch(url, { headers: META_FETCH_HEADERS, cache: "no-store" });
-  const json = await response.json().catch(() => null);
-
-  if (!response.ok || !json?.id || !json?.user_id || !json?.username) {
-    throw new InstagramApiError(
-      "Failed to load the connected Instagram account's profile.",
-      "INSTAGRAM_API_ERROR",
-      {
-        httpStatus: response.status,
-        httpStatusText: response.statusText,
-        headers: metaDiagnosticHeaders(response),
-        body: json,
-      },
-    );
-  }
-
-  return {
-    id: String(json.id),
-    webhookUserId: String(json.user_id),
-    username: json.username,
-    accountType: json.account_type,
-    profilePictureUrl: json.profile_picture_url,
-  };
-}
-
-export async function subscribeToMessageWebhooks(
-  accessToken: string,
-  instagramUserId: string,
-): Promise<void> {
-  const url = new URL(
-    `${GRAPH_HOST}/${env.META_GRAPH_API_VERSION}/${instagramUserId}/subscribed_apps`,
+  throw new InstagramApiError(
+    "Failed to start the Instagram connection.",
+    "INSTAGRAM_AUTH_ERROR",
+    diagnosticDetails(response, json),
   );
-  const body = new URLSearchParams({
-    subscribed_fields: "messages",
-    access_token: accessToken,
-  });
-
-  const response = await fetch(url, {
-    method: "POST",
-    body,
-    headers: META_FETCH_HEADERS,
-    cache: "no-store",
-  });
-  const json = await response.json().catch(() => null);
-
-  if (!response.ok || json?.success !== true) {
-    throw new InstagramApiError(
-      "Failed to subscribe the Instagram account to message webhooks.",
-      "INSTAGRAM_API_ERROR",
-      {
-        httpStatus: response.status,
-        httpStatusText: response.statusText,
-        headers: metaDiagnosticHeaders(response),
-        body: json,
-      },
-    );
-  }
 }
 
-// spec §22/§59/§37: send a text DM. Callers must check the 24-hour
-// messaging window themselves first (see
-// `src/lib/instagram/send-eligibility.ts`) — this function does not, and
-// never applies the `HUMAN_AGENT` tag to extend that window. That tag is
-// Meta's mechanism for a real human replying manually up to 7 days later;
-// using it to let *our* automation send outside the window is exactly the
-// "bypass a platform limitation through an unofficial/automated path"
-// spec §41 forbids, so this app never sends that way (documented in
-// docs/INSTAGRAM_SETUP.md).
+type ExchangeResult = { accountId: string; username: string; displayName?: string };
+
+// `POST /oauth/exchange` — finalizes the connection SocialAPI.AI's managed
+// app negotiated with Meta, attaching it to our workspace. `code`/`state`
+// are whatever Instagram's redirect handed back to our callback route;
+// `redirect_uri` must exactly match what `getConnectAuthUrl()` sent.
+export async function exchangeOAuthCode(
+  code: string,
+  state: string,
+): Promise<ExchangeResult> {
+  const { response, json } = await callSocialApi("oauth.exchange", "/oauth/exchange", {
+    method: "POST",
+    body: {
+      code,
+      platform: "instagram",
+      metadata: { redirect_uri: getRedirectUri(), state },
+    },
+  });
+  const body = json as
+    | { account_id?: string; username?: string; display_name?: string; status?: string }
+    | null;
+
+  if (response.status === 201 && body?.account_id && body?.username) {
+    return { accountId: body.account_id, username: body.username, displayName: body.display_name };
+  }
+  if (body?.status === "selection_required") {
+    // Multi-account platforms (Google, Facebook Pages) can require picking
+    // one of several returned accounts — not a shape Instagram produces,
+    // but handled explicitly rather than silently mismatching below.
+    throw new InstagramApiError(
+      "This Instagram connection returned multiple accounts to choose from, which isn't supported yet.",
+      "INSTAGRAM_AUTH_ERROR",
+      diagnosticDetails(response, json),
+    );
+  }
+
+  throw new InstagramApiError(
+    "Instagram rejected the connection attempt.",
+    "INSTAGRAM_AUTH_ERROR",
+    diagnosticDetails(response, json),
+  );
+}
+
 export type SendMessageResult = { externalMessageId: string };
 
+// `POST /inbox/conversations/{conversationId}/messages` — spec §22/§59/§37:
+// send a text DM. Callers must check the 24-hour messaging window
+// themselves first (see `src/lib/instagram/send-eligibility.ts`) — this
+// function does not, and never attaches a `message_tag` to bypass it. That
+// tag exists for specific Meta-approved use cases (e.g. a human agent
+// replying within 7 days), not for letting *our* automation slip past the
+// 24-hour window, which would be exactly the "bypass a platform limitation
+// through an unofficial/automated path" spec §41 forbids.
 export async function sendMessage(
-  accessToken: string,
-  senderInstagramUserId: string,
-  recipientInstagramUserId: string,
+  accountId: string,
+  conversationId: string,
   text: string,
 ): Promise<SendMessageResult> {
-  const url = `${GRAPH_HOST}/${env.META_GRAPH_API_VERSION}/${senderInstagramUserId}/messages`;
+  const { response, json } = await callSocialApi(
+    "inbox.send",
+    `/inbox/conversations/${conversationId}/messages`,
+    { method: "POST", body: { account_id: accountId, text } },
+  );
+  const body = json as { success?: boolean; message_id?: string } | null;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      ...META_FETCH_HEADERS,
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      recipient: { id: recipientInstagramUserId },
-      message: { text },
-    }),
-    cache: "no-store",
-  });
-
-  const json = await response.json().catch(() => null);
-
-  if (!response.ok || !json?.message_id) {
+  if (!response.ok || body?.success !== true || !body?.message_id) {
     throw new InstagramApiError(
       "Failed to send the Instagram message.",
       "INSTAGRAM_API_ERROR",
-      {
-        httpStatus: response.status,
-        httpStatusText: response.statusText,
-        headers: metaDiagnosticHeaders(response),
-        body: json,
-      },
+      diagnosticDetails(response, json),
     );
   }
 
-  return { externalMessageId: String(json.message_id) };
+  return { externalMessageId: body.message_id };
+}
+
+export type ConnectedAccount = {
+  id: string;
+  platform: string;
+  username: string;
+  name?: string;
+  status: string;
+  profilePictureUrl?: string;
+};
+
+// `GET /accounts` — used by Settings to show connection health, and
+// available for debugging/verification against the real API.
+export async function listConnectedAccounts(): Promise<ConnectedAccount[]> {
+  const { response, json } = await callSocialApi("accounts.list", "/accounts");
+  const body = json as
+    | { data?: Array<{ id: string; platform: string; username: string; name?: string; status: string; profile_picture_url?: string }> }
+    | null;
+
+  if (!response.ok || !body?.data) {
+    throw new InstagramApiError(
+      "Failed to load connected Instagram accounts.",
+      "INSTAGRAM_API_ERROR",
+      diagnosticDetails(response, json),
+    );
+  }
+
+  return body.data.map((a) => ({
+    id: a.id,
+    platform: a.platform,
+    username: a.username,
+    name: a.name,
+    status: a.status,
+    profilePictureUrl: a.profile_picture_url,
+  }));
+}
+
+// `DELETE /accounts/{id}` — soft-deletes the connection on SocialAPI.AI's
+// side: it drops off `listConnectedAccounts()` and every further call
+// using it 404s. Treated as idempotent here — a 404 (already gone, e.g.
+// disconnected directly from SocialAPI.AI's own dashboard) counts as
+// success, since the end state either way is "not connected."
+export async function disconnectSocialAccount(accountId: string): Promise<void> {
+  const { response, json } = await callSocialApi(
+    "accounts.disconnect",
+    `/accounts/${accountId}`,
+    { method: "DELETE" },
+  );
+
+  if (!response.ok && response.status !== 404) {
+    throw new InstagramApiError(
+      "Failed to disconnect the Instagram account.",
+      "INSTAGRAM_API_ERROR",
+      diagnosticDetails(response, json),
+    );
+  }
 }

@@ -36,7 +36,6 @@ RUN npx prisma generate
 ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
 ENV NEXTAUTH_SECRET="placeholder-build-time-value-only"
 ENV NEXTAUTH_URL="http://localhost:3000"
-ENV ENCRYPTION_KEY="placeholder-build-time-value-only-32ch"
 RUN npm run build
 
 # ---- runner: the actual production image ----

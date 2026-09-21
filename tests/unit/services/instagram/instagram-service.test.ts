@@ -2,9 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { envMock } = vi.hoisted(() => ({
   envMock: {
-    META_APP_ID: "test-app-id",
-    META_APP_SECRET: "test-app-secret",
-    META_GRAPH_API_VERSION: "v26.0",
+    SOCIALAPI_TOKEN: "test-socialapi-token",
+    SOCIALAPI_WEBHOOK_SECRET: "test-webhook-secret",
     NEXTAUTH_URL: "http://localhost:3000",
   },
 }));
@@ -12,53 +11,27 @@ vi.mock("@/lib/validation/env", () => ({ env: envMock }));
 
 const { InstagramApiError } = await import("@/lib/instagram/errors");
 const {
-  exchangeCodeForShortLivedToken,
-  exchangeForLongLivedToken,
-  getAuthorizationUrl,
-  getProfile,
-  subscribeToMessageWebhooks,
+  disconnectSocialAccount,
+  exchangeOAuthCode,
+  getConnectAuthUrl,
+  listConnectedAccounts,
   sendMessage,
 } = await import("@/services/instagram/instagram-service");
 
 function jsonResponse(status: number, body: unknown) {
   return {
     ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 || status === 201 || status === 202 ? "OK" : "Error",
     json: async () => body,
   } as Response;
 }
 
-describe("getAuthorizationUrl", () => {
-  beforeEach(() => {
-    envMock.META_APP_ID = "test-app-id";
-    envMock.META_APP_SECRET = "test-app-secret";
-  });
-
-  it("builds the direct Instagram Business Login authorize URL with the required params", () => {
-    const url = new URL(getAuthorizationUrl("csrf-state-1"));
-
-    expect(url.origin + url.pathname).toBe("https://www.instagram.com/oauth/authorize");
-    expect(url.searchParams.get("client_id")).toBe("test-app-id");
-    expect(url.searchParams.get("state")).toBe("csrf-state-1");
-    expect(url.searchParams.get("redirect_uri")).toBe(
-      "http://localhost:3000/api/instagram/callback",
-    );
-    expect(url.searchParams.get("scope")).toBe(
-      "instagram_business_basic,instagram_business_manage_messages",
-    );
-  });
-
-  it("throws when Instagram isn't configured on this server", () => {
-    envMock.META_APP_ID = "";
-    expect(() => getAuthorizationUrl("state")).toThrow(InstagramApiError);
-  });
-});
-
-describe("fetch-backed Instagram calls", () => {
+describe("fetch-backed SocialAPI.AI calls", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    envMock.META_APP_ID = "test-app-id";
-    envMock.META_APP_SECRET = "test-app-secret";
+    envMock.SOCIALAPI_TOKEN = "test-socialapi-token";
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -67,126 +40,134 @@ describe("fetch-backed Instagram calls", () => {
     vi.unstubAllGlobals();
   });
 
-  it("exchangeCodeForShortLivedToken returns the token on success", async () => {
+  it("getConnectAuthUrl returns the auth_url shape for the OAuth flow", async () => {
     fetchMock.mockResolvedValue(
-      jsonResponse(200, {
-        data: [{ access_token: "short-token", user_id: 12345, permissions: "a,b" }],
-      }),
+      jsonResponse(202, { auth_url: "https://www.instagram.com/oauth/authorize/?x=1", state: "echoed-state" }),
     );
 
-    const result = await exchangeCodeForShortLivedToken("auth-code");
+    const result = await getConnectAuthUrl("csrf-state-1");
 
     expect(result).toEqual({
-      accessToken: "short-token",
-      instagramUserId: "12345",
-      permissions: ["a", "b"],
+      kind: "auth_url",
+      authUrl: "https://www.instagram.com/oauth/authorize/?x=1",
+      state: "echoed-state",
     });
-  });
-
-  it("accepts Instagram Login's direct token response shape", async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse(200, {
-        access_token: "short-token",
-        user_id: 12345,
-        permissions: ["instagram_business_basic", "instagram_business_manage_messages"],
-      }),
-    );
-
-    const result = await exchangeCodeForShortLivedToken("auth-code");
-
-    expect(result).toEqual({
-      accessToken: "short-token",
-      instagramUserId: "12345",
-      permissions: ["instagram_business_basic", "instagram_business_manage_messages"],
-    });
-  });
-
-  it("exchangeCodeForShortLivedToken throws InstagramApiError when Meta rejects the code", async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse(400, { error: { message: "invalid code" } }),
-    );
-
-    await expect(exchangeCodeForShortLivedToken("bad-code")).rejects.toThrow(
-      InstagramApiError,
-    );
-  });
-
-  it("exchangeForLongLivedToken returns the exchanged token on success", async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse(200, { access_token: "long-token", expires_in: 5184000 }),
-    );
-
-    const result = await exchangeForLongLivedToken("short-token");
-    expect(result).toEqual({ accessToken: "long-token", expiresInSeconds: 5184000 });
-  });
-
-  it("getProfile returns the parsed profile on success", async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse(200, {
-        id: 999,
-        username: "someuser",
-        account_type: "BUSINESS",
-        profile_picture_url: "https://example.com/p.jpg",
-      }),
-    );
-
-    const profile = await getProfile("access-token");
-
-    expect(profile).toEqual({
-      id: "999",
-      username: "someuser",
-      accountType: "BUSINESS",
-      profilePictureUrl: "https://example.com/p.jpg",
-    });
-
-    const requestedUrl = new URL(fetchMock.mock.calls[0][0] as string);
-    expect(requestedUrl.pathname).toBe("/v26.0/me");
-  });
-
-  it("getProfile throws InstagramApiError when the profile fetch fails", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(401, { error: "unauthorized" }));
-
-    await expect(getProfile("bad-token")).rejects.toThrow(InstagramApiError);
-  });
-
-  it("subscribes the Instagram account to message webhooks", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(200, { success: true }));
-
-    await subscribeToMessageWebhooks("access-token", "instagram-user-1");
-
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url.toString()).toBe(
-      "https://graph.instagram.com/v26.0/instagram-user-1/subscribed_apps",
-    );
+    expect(url).toBe("https://api.social-api.ai/v1/accounts/connect");
     expect(init.method).toBe("POST");
-    expect(init.body.toString()).toContain("subscribed_fields=messages");
-    expect(init.body.toString()).toContain("access_token=access-token");
-  });
-
-  it("sendMessage posts to the versioned messages endpoint and returns the message id", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(200, { message_id: "mid.999" }));
-
-    const result = await sendMessage("access-token", "sender-1", "recipient-1", "Hi!");
-
-    expect(result).toEqual({ externalMessageId: "mid.999" });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://graph.instagram.com/v26.0/sender-1/messages");
-    expect(init.method).toBe("POST");
-    expect(init.headers.Authorization).toBe("Bearer access-token");
+    expect(init.headers.Authorization).toBe("Bearer test-socialapi-token");
     expect(JSON.parse(init.body)).toEqual({
-      recipient: { id: "recipient-1" },
-      message: { text: "Hi!" },
+      platform: "instagram",
+      redirect_uri: "http://localhost:3000/api/instagram/callback",
+      state: "csrf-state-1",
     });
   });
 
-  it("sendMessage throws InstagramApiError and never bypasses the window itself when Meta refuses the send", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(400, { error: "outside window" }));
+  it("getConnectAuthUrl throws InstagramApiError when the API rejects the request", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(401, { error: { code: "auth", message: "bad key" } }));
 
-    await expect(sendMessage("token", "sender-1", "recipient-1", "Hi!")).rejects.toThrow(
-      InstagramApiError,
+    await expect(getConnectAuthUrl("state")).rejects.toThrow(InstagramApiError);
+  });
+
+  it("exchangeOAuthCode returns the connected account on success", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(201, { account_id: "acc_1", username: "someuser", display_name: "Some User" }),
     );
-    // sendMessage never adds a human_agent tag or any window-bypass field.
-    const [, init] = fetchMock.mock.calls[0];
-    expect(JSON.parse(init.body)).not.toHaveProperty("tag");
+
+    const result = await exchangeOAuthCode("auth-code", "csrf-state-1");
+
+    expect(result).toEqual({ accountId: "acc_1", username: "someuser", displayName: "Some User" });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.social-api.ai/v1/oauth/exchange");
+    expect(JSON.parse(init.body)).toEqual({
+      code: "auth-code",
+      platform: "instagram",
+      metadata: { redirect_uri: "http://localhost:3000/api/instagram/callback", state: "csrf-state-1" },
+    });
+  });
+
+  it("exchangeOAuthCode throws InstagramApiError when the code is rejected", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(400, { error: { code: "invalid_code", message: "expired" } }));
+
+    await expect(exchangeOAuthCode("bad-code", "state")).rejects.toThrow(InstagramApiError);
+  });
+
+  it("sendMessage posts to the conversation's messages endpoint and returns the message id", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { success: true, message_id: "m_999" }));
+
+    const result = await sendMessage("acc_1", "conv_1", "Hi!");
+
+    expect(result).toEqual({ externalMessageId: "m_999" });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.social-api.ai/v1/inbox/conversations/conv_1/messages");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ account_id: "acc_1", text: "Hi!" });
+  });
+
+  it("sendMessage throws InstagramApiError when the send fails", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(400, { success: false }));
+
+    await expect(sendMessage("acc_1", "conv_1", "Hi!")).rejects.toThrow(InstagramApiError);
+  });
+
+  it("listConnectedAccounts returns the parsed account list", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        count: 1,
+        data: [
+          {
+            id: "acc_1",
+            platform: "instagram",
+            username: "someuser",
+            name: "Some User",
+            status: "active",
+            profile_picture_url: "https://example.com/p.jpg",
+          },
+        ],
+      }),
+    );
+
+    const result = await listConnectedAccounts();
+
+    expect(result).toEqual([
+      {
+        id: "acc_1",
+        platform: "instagram",
+        username: "someuser",
+        name: "Some User",
+        status: "active",
+        profilePictureUrl: "https://example.com/p.jpg",
+      },
+    ]);
+  });
+
+  it("disconnectSocialAccount succeeds on a 204 response", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 204,
+      statusText: "No Content",
+      json: async () => {
+        throw new Error("no body");
+      },
+    } as unknown as Response);
+
+    await expect(disconnectSocialAccount("acc_1")).resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.social-api.ai/v1/accounts/acc_1");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("disconnectSocialAccount treats a 404 as success (already gone)", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(404, { error: { code: "resource.not_found", message: "Account not found" } }),
+    );
+
+    await expect(disconnectSocialAccount("acc_1")).resolves.toBeUndefined();
+  });
+
+  it("disconnectSocialAccount throws InstagramApiError on a real failure", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(401, { error: { code: "auth", message: "bad key" } }));
+
+    await expect(disconnectSocialAccount("acc_1")).rejects.toThrow(InstagramApiError);
   });
 });

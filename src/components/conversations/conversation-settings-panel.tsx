@@ -306,7 +306,8 @@ export function ConversationSettingsPanel({
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Has no effect yet — auto-sending isn&apos;t implemented until Phase 9/10.
+            When on, every new incoming message gets an AI reply generated and sent
+            automatically — no approval step, nothing to review first.
           </p>
         </div>
 

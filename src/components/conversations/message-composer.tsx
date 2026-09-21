@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import {
@@ -10,9 +10,12 @@ import {
   rejectDraftReply,
   sendDraftReply,
   sendManualMessageAction,
+  setConversationAutoSend,
   updateDraftReplyText,
 } from "@/app/conversations/actions";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 
 export type PendingDraft = {
@@ -32,19 +35,76 @@ export type PendingDraft = {
 export function MessageComposer({
   conversationId,
   initialDraft,
+  initialAutoSend,
 }: {
   conversationId: string;
   initialDraft: PendingDraft | null;
+  initialAutoSend: boolean;
 }) {
   const [draft, setDraft] = useState<PendingDraft | null>(initialDraft);
   const [text, setText] = useState(initialDraft?.text ?? "");
+  const [autoSend, setAutoSend] = useState(initialAutoSend);
   const [isPending, startTransition] = useTransition();
+
+  // `useState(initialX)` only applies its initial value once, on mount —
+  // it never re-syncs when the parent Server Component re-renders with
+  // fresh props (e.g. from `ConversationLiveRefresh`'s polling, or the
+  // auto-respond webhook path generating/sending a draft entirely
+  // server-side with no client interaction at all). Without this, the box
+  // would keep showing a stale draft (or a stale Auto-reply state)
+  // indefinitely after the real data changed server-side — confirmed
+  // 2026-09-21: an already-auto-sent draft stayed visible as "Approved —
+  // ready to send." since nothing ever told this component it was sent.
+  // Only resyncs `text` when the draft's *identity* changes (a different
+  // `aiResponseId`, or it disappearing/appearing), so it doesn't clobber
+  // in-progress edits to the same draft on every poll.
+  const syncedDraftId = useRef(initialDraft?.aiResponseId ?? null);
+
+  // Every local mutation of `draft` goes through this instead of calling
+  // `setDraft` directly, so the ref always reflects what this component
+  // currently believes the draft's identity is — otherwise a later poll
+  // bringing back the *same* value this component set locally (e.g. both
+  // `null` after this component's own send) would look like "nothing
+  // changed" and could mask a real update in between.
+  function updateLocalDraft(next: PendingDraft | null) {
+    syncedDraftId.current = next?.aiResponseId ?? null;
+    setDraft(next);
+  }
+
+  useEffect(() => {
+    const incomingId = initialDraft?.aiResponseId ?? null;
+    if (incomingId === syncedDraftId.current) return;
+    syncedDraftId.current = incomingId;
+    setDraft(initialDraft);
+    setText(initialDraft?.text ?? "");
+  }, [initialDraft]);
+
+  useEffect(() => {
+    setAutoSend(initialAutoSend);
+  }, [initialAutoSend]);
+
+  function handleAutoSendToggle(checked: boolean) {
+    setAutoSend(checked);
+    startTransition(async () => {
+      const result = await setConversationAutoSend(conversationId, checked);
+      if (!result.success) {
+        setAutoSend(!checked);
+        toast.error(result.error);
+      } else {
+        toast.success(
+          checked
+            ? "Auto-reply is on — new messages get an AI reply sent automatically."
+            : "Auto-reply is off.",
+        );
+      }
+    });
+  }
 
   function handleGenerate() {
     startTransition(async () => {
       const result = await generateDraftReply(conversationId);
       if (result.success) {
-        setDraft({ ...result.draft, status: "PENDING_APPROVAL" });
+        updateLocalDraft({ ...result.draft, status: "PENDING_APPROVAL" });
         setText(result.draft.text);
         toast.success(
           `Draft generated (~${Math.round(result.draft.confidence * 100)}% confidence)`,
@@ -60,7 +120,7 @@ export function MessageComposer({
     startTransition(async () => {
       const result = await regenerateDraftReply(conversationId, draft.aiResponseId);
       if (result.success) {
-        setDraft({ ...result.draft, status: "PENDING_APPROVAL" });
+        updateLocalDraft({ ...result.draft, status: "PENDING_APPROVAL" });
         setText(result.draft.text);
         toast.success("Regenerated");
       } else {
@@ -86,7 +146,7 @@ export function MessageComposer({
       if (!(await saveEditsIfNeeded(currentDraft))) return;
       const result = await approveDraftReply(currentDraft.aiResponseId);
       if (result.success) {
-        setDraft({ ...currentDraft, text, status: "APPROVED" });
+        updateLocalDraft({ ...currentDraft, text, status: "APPROVED" });
         toast.success("Approved — click Send to deliver it.");
       } else {
         toast.error(result.error);
@@ -100,7 +160,7 @@ export function MessageComposer({
       const result = await rejectDraftReply(draft.aiResponseId);
       if (result.success) {
         toast.success("Draft rejected");
-        setDraft(null);
+        updateLocalDraft(null);
         setText("");
       } else {
         toast.error(result.error);
@@ -114,7 +174,7 @@ export function MessageComposer({
       const result = await sendDraftReply(draft.aiResponseId);
       if (result.success) {
         toast.success("Sent");
-        setDraft(null);
+        updateLocalDraft(null);
         setText("");
       } else {
         toast.error(result.error);
@@ -141,12 +201,26 @@ export function MessageComposer({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
+      <div
+        className="flex items-center justify-between gap-2 rounded-md border bg-muted/40 px-2.5 py-1"
+        title="When on, new messages get an AI reply generated and sent automatically — nothing to approve."
+      >
+        <Label htmlFor="auto-send-toggle" className="text-xs font-medium">
+          Auto-reply
+        </Label>
+        <Switch
+          id="auto-send-toggle"
+          checked={autoSend}
+          onCheckedChange={handleAutoSendToggle}
+          disabled={isPending}
+        />
+      </div>
       {draft && (
-        <p className="text-xs font-medium text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {draft.status === "APPROVED"
-            ? "Approved — ready to send."
-            : `AI suggested reply (~${Math.round(draft.confidence * 100)}% confidence) — edit freely before approving.`}
+            ? "Approved, ready to send"
+            : `AI draft (~${Math.round(draft.confidence * 100)}% confidence) — edit freely`}
         </p>
       )}
       <div className="flex items-end gap-2">

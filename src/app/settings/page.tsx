@@ -13,7 +13,7 @@ import { AISettingsForm } from "@/components/settings/ai-settings-form";
 import { ChatModeManager } from "@/components/settings/chat-mode-manager";
 import { RecentErrorsPanel } from "@/components/settings/recent-errors";
 import { UsageSummaryPanel } from "@/components/settings/usage-summary";
-import { disconnectInstagramAccount, refreshInstagramWebhookSubscription } from "./actions";
+import { adoptConnectedAccount, disconnectInstagramAccount } from "./actions";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -27,6 +27,7 @@ import { getOrCreateAIConfiguration } from "@/lib/ai/get-ai-configuration";
 import { getRecentErrors } from "@/lib/analytics/get-recent-errors";
 import { getUsageSummary } from "@/lib/analytics/get-usage-summary";
 import { prisma } from "@/lib/db/prisma";
+import { listConnectedAccounts } from "@/services/instagram/instagram-service";
 
 const OTHER_SETTINGS_SECTIONS = [
   {
@@ -62,7 +63,7 @@ const CONNECT_BANNER: Record<
   not_configured: {
     tone: "error",
     message:
-      "Instagram connection isn't configured on this server yet (missing META_APP_ID/META_APP_SECRET).",
+      "Instagram connection isn't configured on this server yet (missing SOCIALAPI_TOKEN).",
   },
   already_connected: {
     tone: "error",
@@ -105,14 +106,47 @@ export default async function SettingsPage({
       prisma.instagramAccount.findFirst({
         where: { userId: user.id },
         orderBy: { updatedAt: "desc" },
-        select: { id: true, username: true, status: true, tokenExpiresAt: true },
+        select: { id: true, username: true, status: true, instagramUserId: true },
       }),
       getUsageSummary(user.id),
       getRecentErrors(user.id),
     ]);
 
   const banner = instagramStatus ? CONNECT_BANNER[instagramStatus] : undefined;
-  const isConnected = instagramAccount?.status === "ACTIVE";
+  let isConnected = instagramAccount?.status === "ACTIVE";
+  let orphanedPlatformAccount: { id: string; username: string } | undefined;
+
+  // Reconcile against SocialAPI.AI's real account list (spec: don't trust
+  // our own local status blindly) — an account can be disconnected
+  // directly from SocialAPI.AI's own dashboard without us ever hearing
+  // about it. Best-effort: a SocialAPI outage or missing token falls back
+  // to local DB truth rather than breaking the whole page.
+  try {
+    const liveAccounts = await listConnectedAccounts();
+
+    if (isConnected && instagramAccount) {
+      const stillConnected = liveAccounts.some((a) => a.id === instagramAccount.instagramUserId);
+      if (!stillConnected) {
+        await prisma.instagramAccount.update({
+          where: { id: instagramAccount.id },
+          data: { status: "DISCONNECTED" },
+        });
+        isConnected = false;
+      }
+    }
+
+    if (!isConnected) {
+      // SocialAPI.AI plans typically allow only a small number of
+      // connected accounts — offer to adopt one that's already live on
+      // the platform but not linked to this InstaMate user, rather than
+      // making the user disconnect-then-redo the OAuth flow for an
+      // account that's already connected.
+      const unlinked = liveAccounts.find((a) => a.id !== instagramAccount?.instagramUserId);
+      if (unlinked) orphanedPlatformAccount = { id: unlinked.id, username: unlinked.username };
+    }
+  } catch {
+    // SocialAPI.AI unreachable or not configured — proceed with local status.
+  }
 
   return (
     <AppShell userLabel={user.email ?? user.name ?? "Account"}>
@@ -144,41 +178,57 @@ export default async function SettingsPage({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {isConnected ? (
+            {isConnected && instagramAccount ? (
               <div className="flex items-center justify-between gap-4">
-                <div>
-                  <p className="text-sm font-medium">
-                    Connected as @{instagramAccount.username}
+                <p className="text-sm font-medium">
+                  Connected as @{instagramAccount.username}
+                </p>
+                <form
+                  action={async () => {
+                    "use server";
+                    await disconnectInstagramAccount(instagramAccount.id);
+                  }}
+                >
+                  <Button type="submit" variant="outline" size="sm">
+                    Disconnect
+                  </Button>
+                </form>
+              </div>
+            ) : orphanedPlatformAccount ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-sm text-muted-foreground">
+                    @{orphanedPlatformAccount.username} is already connected on your
+                    SocialAPI.AI plan (only one account is allowed) — use it here instead of
+                    connecting a new one.
                   </p>
-                  {instagramAccount.tokenExpiresAt && (
-                    <p className="text-xs text-muted-foreground">
-                      Access token valid until{" "}
-                      {instagramAccount.tokenExpiresAt.toLocaleDateString()}
-                    </p>
-                  )}
-                </div>
-                <div className="flex gap-2">
                   <form
                     action={async () => {
                       "use server";
-                      await refreshInstagramWebhookSubscription(instagramAccount.id);
+                      await adoptConnectedAccount(orphanedPlatformAccount.id);
                     }}
                   >
-                    <Button type="submit" variant="outline" size="sm">
-                      Refresh webhooks
-                    </Button>
-                  </form>
-                  <form
-                    action={async () => {
-                      "use server";
-                      await disconnectInstagramAccount(instagramAccount.id);
-                    }}
-                  >
-                    <Button type="submit" variant="outline" size="sm">
-                      Disconnect
+                    <Button type="submit" size="sm">
+                      Use @{orphanedPlatformAccount.username}
                     </Button>
                   </form>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  Want a different account instead? Disconnect it from your{" "}
+                  <a
+                    href="https://social-api.ai"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    SocialAPI.AI dashboard
+                  </a>{" "}
+                  first, then{" "}
+                  <a href="/api/instagram/connect" className="underline">
+                    connect a new one
+                  </a>
+                  .
+                </p>
               </div>
             ) : (
               <div className="flex items-center justify-between gap-4">
