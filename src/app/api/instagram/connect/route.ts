@@ -11,7 +11,7 @@ import {
 } from "@/lib/instagram/oauth";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { logOperation } from "@/lib/logging/logger";
-import { env } from "@/lib/validation/env";
+import { getSystemConfig } from "@/lib/config/system-config";
 import { getConnectAuthUrl } from "@/services/instagram/instagram-service";
 
 // Plain browser navigation (an <a href> in Settings), not a fetch/mutation —
@@ -38,7 +38,7 @@ export async function GET() {
     return settingsRedirect("rate_limited");
   }
 
-  if (!env.SOCIALAPI_TOKEN) {
+  if (!(await getSystemConfig("SOCIALAPI_TOKEN"))) {
     logOperation({
       requestId,
       userId: user.id,

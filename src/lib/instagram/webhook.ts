@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 
-import { env } from "@/lib/validation/env";
+import { getSystemConfig } from "@/lib/config/system-config";
 
 // Modeled from SocialAPI.AI's webhook docs (docs.social-api.ai/guides/webhooks)
 // — switched from direct Meta Graph API webhooks 2026-09-21. Every delivery
@@ -63,18 +63,19 @@ export type SocialApiDmEvent = z.infer<typeof socialApiDmEventSchema>;
 // signed value). Verify against v2, and against the exact raw bytes
 // SocialAPI signed — never a re-serialized body, which would break the
 // comparison.
-export function isValidWebhookSignature(
+export async function isValidWebhookSignature(
   rawBody: string,
   timestampHeader: string | null,
   signatureV2Header: string | null,
-): boolean {
-  if (!timestampHeader || !signatureV2Header || !env.SOCIALAPI_WEBHOOK_SECRET) return false;
+): Promise<boolean> {
+  const secret = await getSystemConfig("SOCIALAPI_WEBHOOK_SECRET");
+  if (!timestampHeader || !signatureV2Header || !secret) return false;
 
   const [scheme, signature] = signatureV2Header.split("=");
   if (scheme !== "sha256" || !signature) return false;
 
   const expected = crypto
-    .createHmac("sha256", env.SOCIALAPI_WEBHOOK_SECRET)
+    .createHmac("sha256", secret)
     .update(`${timestampHeader}.${rawBody}`)
     .digest("hex");
 
