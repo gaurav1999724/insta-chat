@@ -1,18 +1,13 @@
 import { prisma } from "@/lib/db/prisma";
 import { env } from "@/lib/validation/env";
+import { SYSTEM_CONFIG_KEYS, type SystemConfigKey } from "@/lib/config/system-config-keys";
+
+export { SYSTEM_CONFIG_KEYS, type SystemConfigKey };
 
 // Runtime-overridable secrets: editable from Settings without a redeploy.
 // A `SystemSetting` row (if present and non-empty) wins over the matching
 // env var of the same name, so an existing .env-only deployment keeps
 // working untouched until someone saves a value through the UI.
-export const SYSTEM_CONFIG_KEYS = [
-  "SOCIALAPI_TOKEN",
-  "SOCIALAPI_WEBHOOK_SECRET",
-  "GEMINI_API_KEY",
-  "OPENAI_API_KEY",
-] as const;
-
-export type SystemConfigKey = (typeof SYSTEM_CONFIG_KEYS)[number];
 
 export async function getSystemConfig(key: SystemConfigKey): Promise<string | undefined> {
   const row = await prisma.systemSetting.findUnique({ where: { key } });

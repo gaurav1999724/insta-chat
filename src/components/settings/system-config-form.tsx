@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { systemConfigFormSchema, type SystemConfigFormValues } from "@/lib/validation/system-config";
-import type { SystemConfigKey } from "@/lib/config/system-config";
+import type { SystemConfigKey } from "@/lib/config/system-config-keys";
 
 const FIELDS: { key: SystemConfigKey; label: string; description: string }[] = [
   {

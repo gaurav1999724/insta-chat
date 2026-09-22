@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { SYSTEM_CONFIG_KEYS } from "@/lib/config/system-config";
+import { SYSTEM_CONFIG_KEYS } from "@/lib/config/system-config-keys";
 
 // Every field is optional and an empty string means "leave unchanged" —
 // the form never round-trips actual secret values into the browser, so
