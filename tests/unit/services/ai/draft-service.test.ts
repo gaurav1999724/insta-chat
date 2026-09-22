@@ -22,8 +22,8 @@ vi.mock("@/lib/security/rate-limit", async () => {
   return { ...actual, checkRateLimit };
 });
 
-const { generateResponse } = vi.hoisted(() => ({ generateResponse: vi.fn() }));
-vi.mock("@/services/gemini/gemini-service", () => ({ generateResponse }));
+const { generateReply } = vi.hoisted(() => ({ generateReply: vi.fn() }));
+vi.mock("@/services/ai/response-service", () => ({ generateReply }));
 
 const { createDraftReply } = await import("@/services/ai/draft-service");
 
@@ -36,6 +36,7 @@ describe("createDraftReply", () => {
       id: "ai-response-1",
       text: "Haan bilkul!",
       confidence: 0.8,
+      provider: "GEMINI",
     });
     prismaMock.$transaction.mockResolvedValue(undefined);
   });
@@ -49,7 +50,7 @@ describe("createDraftReply", () => {
       success: false,
       error: expect.stringContaining("Too many AI replies"),
     });
-    expect(generateResponse).not.toHaveBeenCalled();
+    expect(generateReply).not.toHaveBeenCalled();
     expect(prismaMock.aPIError.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ category: "RATE_LIMIT_ERROR" }),
@@ -58,9 +59,10 @@ describe("createDraftReply", () => {
   });
 
   it("generates a draft, persists AIResponse/AIUsage/AuditLog, and returns it", async () => {
-    generateResponse.mockResolvedValue({
+    generateReply.mockResolvedValue({
       text: "Haan bilkul!",
       confidence: 0.8,
+      provider: "GEMINI",
       model: "gemini-3.8-flash",
       promptTokens: 1000,
       completionTokens: 500,
@@ -75,6 +77,7 @@ describe("createDraftReply", () => {
       aiResponseId: "ai-response-1",
       text: "Haan bilkul!",
       confidence: 0.8,
+      provider: "GEMINI",
     });
     expect(prismaMock.aIResponse.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -92,9 +95,10 @@ describe("createDraftReply", () => {
   });
 
   it("computes and stores an estimated cost for a priced model", async () => {
-    generateResponse.mockResolvedValue({
+    generateReply.mockResolvedValue({
       text: "reply",
       confidence: 0.5,
+      provider: "GEMINI",
       model: "gemini-3.8-flash",
       promptTokens: 1_000_000,
       completionTokens: 1_000_000,
@@ -107,11 +111,11 @@ describe("createDraftReply", () => {
     // aIUsage.create's `data` was built with the real estimateCostUsd — cost
     // isn't asserted directly here (prisma is mocked), but the shared
     // pricing module is exercised for real via createDraftReply's own call.
-    expect(generateResponse).toHaveBeenCalledWith("conversation-1");
+    expect(generateReply).toHaveBeenCalledWith("conversation-1");
   });
 
   it("returns the GeminiApiError's message and logs a GEMINI_ERROR on failure", async () => {
-    generateResponse.mockRejectedValue(new GeminiApiError("Gemini quota exceeded"));
+    generateReply.mockRejectedValue(new GeminiApiError("Gemini quota exceeded"));
 
     const result = await createDraftReply("conversation-1", "user-1");
 
@@ -124,7 +128,7 @@ describe("createDraftReply", () => {
   });
 
   it("returns a generic message for a non-GeminiApiError failure, never a raw error", async () => {
-    generateResponse.mockRejectedValue(new Error("ECONNRESET"));
+    generateReply.mockRejectedValue(new Error("ECONNRESET"));
 
     const result = await createDraftReply("conversation-1");
 

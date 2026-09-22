@@ -52,7 +52,7 @@ export default async function ConversationPage({
         status: { in: ["PENDING_APPROVAL", "APPROVED"] },
       },
       orderBy: { createdAt: "desc" },
-      select: { id: true, text: true, confidence: true, status: true },
+      select: { id: true, text: true, confidence: true, status: true, provider: true },
     }),
     prisma.conversationMemory.findMany({
       where: { conversationId: conversation.id },
@@ -128,6 +128,7 @@ export default async function ConversationPage({
                       aiResponseId: pendingDraft.id,
                       text: pendingDraft.text,
                       confidence: pendingDraft.confidence,
+                      provider: pendingDraft.provider === "OPENAI" ? "OPENAI" : "GEMINI",
                       status: pendingDraft.status as "PENDING_APPROVAL" | "APPROVED",
                     }
                   : null

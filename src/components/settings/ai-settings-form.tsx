@@ -5,7 +5,13 @@ import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { z } from "zod";
-import { EmojiLevel, Language, ResponseDelayMode, ResponseLength } from "@prisma/client";
+import {
+  AIProvider,
+  EmojiLevel,
+  Language,
+  ResponseDelayMode,
+  ResponseLength,
+} from "@prisma/client";
 
 import { updateAIConfiguration } from "@/app/settings/actions";
 import { Button } from "@/components/ui/button";
@@ -34,6 +40,7 @@ const formSchema = z
     memoryEnabled: z.boolean(),
     styleMatchingEnabled: z.boolean(),
     maxContextMessages: z.number().int().min(1).max(100),
+    aiProvider: z.nativeEnum(AIProvider),
     model: z.string().trim().min(1, "Model is required"),
     temperature: z.number().min(0).max(2),
   })
@@ -185,6 +192,48 @@ export function AISettingsForm({
                   <SelectItem value={ResponseDelayMode.CUSTOM}>Custom</SelectItem>
                 </SelectContent>
               </Select>
+            )}
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label>Reply AI provider</Label>
+          <Controller
+            control={control}
+            name="aiProvider"
+            render={({ field }) => (
+              <div className="flex flex-wrap gap-4 pt-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name={field.name}
+                    value={AIProvider.AUTO}
+                    checked={field.value === AIProvider.AUTO}
+                    onChange={() => field.onChange(AIProvider.AUTO)}
+                  />
+                  Gemini first, ChatGPT fallback
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name={field.name}
+                    value={AIProvider.GEMINI}
+                    checked={field.value === AIProvider.GEMINI}
+                    onChange={() => field.onChange(AIProvider.GEMINI)}
+                  />
+                  Gemini only
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name={field.name}
+                    value={AIProvider.OPENAI}
+                    checked={field.value === AIProvider.OPENAI}
+                    onChange={() => field.onChange(AIProvider.OPENAI)}
+                  />
+                  ChatGPT only
+                </label>
+              </div>
             )}
           />
         </div>

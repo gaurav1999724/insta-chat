@@ -153,6 +153,7 @@ export type DraftReplyPayload = {
   aiResponseId: string;
   text: string;
   confidence: number;
+  provider: "GEMINI" | "OPENAI";
 };
 export type GenerateDraftReplyResult =
   { success: true; draft: DraftReplyPayload } | { success: false; error: string };
@@ -175,6 +176,7 @@ async function persistGeneratedDraft(
       aiResponseId: result.aiResponseId,
       text: result.text,
       confidence: result.confidence,
+      provider: result.provider,
     },
   };
 }

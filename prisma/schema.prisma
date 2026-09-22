@@ -78,6 +78,12 @@ enum ResponseDelayMode {
   CUSTOM
 }
 
+enum AIProvider {
+  AUTO
+  GEMINI
+  OPENAI
+}
+
 enum AIResponseStatus {
   PENDING_APPROVAL
   APPROVED
@@ -108,6 +114,7 @@ enum ErrorCategory {
   INSTAGRAM_API_ERROR
   WEBHOOK_ERROR
   GEMINI_ERROR
+  OPENAI_ERROR
   DATABASE_ERROR
   QUEUE_ERROR
   VALIDATION_ERROR
@@ -354,6 +361,7 @@ model AIConfiguration {
   memoryEnabled        Boolean           @default(true)
   styleMatchingEnabled Boolean           @default(true)
   maxContextMessages   Int               @default(20)
+  aiProvider           AIProvider        @default(AUTO)
   model                String            @default("gemini-flash-latest")
   temperature          Float             @default(0.9)
   createdAt            DateTime          @default(now())
@@ -415,6 +423,7 @@ model AIResponse {
   suggestedFollowUp String?          @db.Text
   reason            String?          @db.Text
   status            AIResponseStatus @default(PENDING_APPROVAL)
+  provider          AIProvider       @default(GEMINI)
   model             String
   promptTokens      Int?
   completionTokens  Int?
@@ -435,6 +444,7 @@ model AIUsage {
   id               String   @id @default(cuid())
   conversationId   String
   aiResponseId     String?  @unique
+  provider         AIProvider @default(GEMINI)
   model            String
   inputTokens      Int
   outputTokens     Int

@@ -1,9 +1,11 @@
 import { prisma } from "@/lib/db/prisma";
 import { env } from "@/lib/validation/env";
+import type { AIProvider } from "@prisma/client";
 import type { PromptContext } from "@/lib/gemini/prompt-builder";
 
 export type AIGenerationContext = PromptContext & {
   model: string;
+  aiProvider: AIProvider;
   temperature: number;
   maxContextMessages: number;
   totalMessageCount: number;
@@ -91,6 +93,7 @@ export async function getAIGenerationContext(
     conversationSummary: latestSummary?.summary ?? null,
     recentMessages,
     model: aiConfig?.model ?? env.GEMINI_MODEL,
+    aiProvider: aiConfig?.aiProvider ?? "AUTO",
     temperature: aiConfig?.temperature ?? 0.9,
     maxContextMessages,
     totalMessageCount,

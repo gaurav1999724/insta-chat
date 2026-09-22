@@ -33,6 +33,8 @@ const envSchema = z.object({
   // 404s) and can hit real capacity 503s the alias doesn't. Re-verify
   // before assuming this is still current.
   GEMINI_MODEL: z.string().default("gemini-flash-latest"),
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().default("gpt-4o-mini"),
 });
 
 export type Env = z.infer<typeof envSchema>;

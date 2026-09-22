@@ -22,6 +22,7 @@ export type PendingDraft = {
   aiResponseId: string;
   text: string;
   confidence: number;
+  provider: "GEMINI" | "OPENAI";
   status: "PENDING_APPROVAL" | "APPROVED";
 };
 
@@ -219,8 +220,8 @@ export function MessageComposer({
       {draft && (
         <p className="text-xs text-muted-foreground">
           {draft.status === "APPROVED"
-            ? "Approved, ready to send"
-            : `AI draft (~${Math.round(draft.confidence * 100)}% confidence) — edit freely`}
+            ? `Approved, ready to send (${draft.provider === "OPENAI" ? "ChatGPT" : "Gemini"})`
+            : `${draft.provider === "OPENAI" ? "ChatGPT" : "Gemini"} draft (~${Math.round(draft.confidence * 100)}% confidence) — edit freely`}
         </p>
       )}
       <div className="flex items-end gap-2">

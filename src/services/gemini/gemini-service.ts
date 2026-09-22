@@ -155,6 +155,7 @@ function estimateConfidence(candidate: Candidate | undefined): number {
 export type GenerateResponseResult = {
   text: string;
   confidence: number;
+  provider: "GEMINI";
   model: string;
   promptTokens: number | null;
   completionTokens: number | null;
@@ -208,6 +209,7 @@ export async function generateResponse(
   return {
     text,
     confidence: estimateConfidence(response.candidates?.[0]),
+    provider: "GEMINI",
     model: context.model,
     promptTokens: response.usageMetadata?.promptTokenCount ?? null,
     completionTokens: response.usageMetadata?.candidatesTokenCount ?? null,

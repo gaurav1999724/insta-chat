@@ -266,6 +266,7 @@ export default async function SettingsPage({
                 memoryEnabled: config.memoryEnabled,
                 styleMatchingEnabled: config.styleMatchingEnabled,
                 maxContextMessages: config.maxContextMessages,
+                aiProvider: config.aiProvider,
                 model: config.model,
                 temperature: config.temperature,
               }}

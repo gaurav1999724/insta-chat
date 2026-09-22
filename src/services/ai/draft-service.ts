@@ -1,12 +1,21 @@
+import type { ErrorCategory } from "@prisma/client";
+
 import { prisma } from "@/lib/db/prisma";
 import { GeminiApiError } from "@/lib/gemini/errors";
 import { estimateCostUsd } from "@/lib/gemini/pricing";
 import { logOperation } from "@/lib/logging/logger";
 import { checkRateLimit, formatRetryAfter } from "@/lib/security/rate-limit";
-import { generateResponse } from "@/services/gemini/gemini-service";
+import { generateReply } from "@/services/ai/response-service";
+import { OpenAIApiError } from "@/services/openai/openai-service";
 
 export type CreateDraftResult =
-  | { success: true; aiResponseId: string; text: string; confidence: number }
+  | {
+      success: true;
+      aiResponseId: string;
+      text: string;
+      confidence: number;
+      provider: "GEMINI" | "OPENAI";
+    }
   | { success: false; error: string };
 
 // Shared by the "AI Generate" server action
@@ -41,7 +50,7 @@ export async function createDraftReply(
   }
 
   try {
-    const result = await generateResponse(conversationId);
+    const result = await generateReply(conversationId);
 
     const triggerMessage = await prisma.message.findFirst({
       where: { conversationId, direction: "INBOUND" },
@@ -55,6 +64,7 @@ export async function createDraftReply(
         triggerMessageId: triggerMessage?.id,
         text: result.text,
         confidence: result.confidence,
+        provider: result.provider,
         model: result.model,
         promptTokens: result.promptTokens,
         completionTokens: result.completionTokens,
@@ -74,6 +84,7 @@ export async function createDraftReply(
         data: {
           conversationId,
           aiResponseId: aiResponse.id,
+          provider: result.provider,
           model: result.model,
           inputTokens: result.promptTokens ?? 0,
           outputTokens: result.completionTokens ?? 0,
@@ -106,23 +117,33 @@ export async function createDraftReply(
       aiResponseId: aiResponse.id,
       text: aiResponse.text,
       confidence: aiResponse.confidence,
+      provider: result.provider,
     };
   } catch (error) {
     const message =
-      error instanceof GeminiApiError
+      error instanceof GeminiApiError || error instanceof OpenAIApiError
         ? error.message
         : "Unexpected error generating a reply.";
+    // Both providers can throw here (response-service.ts tries Gemini then
+    // falls back to OpenAI in AUTO mode) — categorize by whichever one
+    // actually failed rather than hardcoding a single provider's category,
+    // so this stays accurate regardless of which provider (or both) failed.
+    const category: ErrorCategory =
+      error instanceof GeminiApiError
+        ? "GEMINI_ERROR"
+        : error instanceof OpenAIApiError
+          ? "OPENAI_ERROR"
+          : "UNKNOWN_ERROR";
 
     await prisma.aPIError.create({
       data: {
-        category: "GEMINI_ERROR",
+        category,
         message,
         userId,
         conversationId,
-        metadata:
-          error instanceof GeminiApiError && error.details !== undefined
-            ? { details: JSON.parse(JSON.stringify(error.details)) }
-            : undefined,
+        metadata: {
+          details: error instanceof Error ? error.message : JSON.stringify(error),
+        },
       },
     });
 
@@ -131,7 +152,7 @@ export async function createDraftReply(
       conversationId,
       operation: "ai.generate_response",
       status: "failure",
-      errorCode: "GEMINI_ERROR",
+      errorCode: category,
     });
 
     return { success: false, error: message };

@@ -1,4 +1,10 @@
-import { EmojiLevel, Language, ResponseDelayMode, ResponseLength } from "@prisma/client";
+import {
+  AIProvider,
+  EmojiLevel,
+  Language,
+  ResponseDelayMode,
+  ResponseLength,
+} from "@prisma/client";
 import { z } from "zod";
 
 // Empty string means "no default mode" — normalized to null before hitting Prisma.
@@ -21,6 +27,7 @@ export const aiConfigurationFormSchema = z
     memoryEnabled: z.boolean(),
     styleMatchingEnabled: z.boolean(),
     maxContextMessages: z.coerce.number().int().min(1).max(100),
+    aiProvider: z.nativeEnum(AIProvider),
     model: z.string().trim().min(1, "Model is required"),
     temperature: z.coerce.number().min(0).max(2),
   })
