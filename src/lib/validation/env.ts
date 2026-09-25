@@ -23,13 +23,6 @@ const envSchema = z.object({
   // incoming webhook call.
   SOCIALAPI_WEBHOOK_SECRET: z.string().optional(),
 
-  // Authenticates requests to /api/cron/* — Vercel Cron sends this
-  // automatically as `Authorization: Bearer $CRON_SECRET` for jobs defined
-  // in vercel.json once the env var is set. Optional so local dev without a
-  // configured cron doesn't need it; the route itself refuses to run
-  // unauthenticated if it's set.
-  CRON_SECRET: z.string().optional(),
-
   GEMINI_API_KEY: z.string().optional(),
   // Verified against ai.google.dev/gemini-api/docs/models on 2026-09-17:
   // "gemini-flash-latest" is Google's alias for the current stable Flash

@@ -3,7 +3,7 @@ import { logOperation } from "@/lib/logging/logger";
 import { sendApprovedDraft } from "@/services/ai/send-service";
 import { SendMessageError } from "@/services/ai/send-errors";
 
-const CRON_RETRY_BATCH_LIMIT = 25;
+const SWEEP_RETRY_BATCH_LIMIT = 25;
 
 async function retryOne(aiResponseId: string): Promise<boolean> {
   try {
@@ -31,10 +31,12 @@ async function retryOne(aiResponseId: string): Promise<boolean> {
   }
 }
 
-// Driven by a scheduled job (see src/app/api/cron/retry-failed-deliveries) —
-// the safety net that retries a FAILED reply send even when the conversation
-// never receives another inbound message to trigger the opportunistic path
-// below.
+// The safety net that retries a FAILED reply send even when the
+// conversation never receives another inbound message to trigger the
+// opportunistic path below. Driven by ordinary app traffic instead of a
+// scheduled job — see src/services/ai/retry-sweep-scheduler.ts, which calls
+// this at most once per interval, piggybacking on whatever webhook or page
+// request happens to come in.
 export async function retryDueFailedDeliveries(): Promise<{ attempted: number; sent: number }> {
   // A FAILED delivery with nextRetryAt set is one send-service already
   // classified as worth retrying (transient error, attempts <
@@ -45,7 +47,7 @@ export async function retryDueFailedDeliveries(): Promise<{ attempted: number; s
     where: { status: "FAILED", nextRetryAt: { lte: new Date() } },
     include: { message: { select: { sentAsResponse: { select: { id: true } } } } },
     orderBy: { nextRetryAt: "asc" },
-    take: CRON_RETRY_BATCH_LIMIT,
+    take: SWEEP_RETRY_BATCH_LIMIT,
   });
 
   let sent = 0;
@@ -61,8 +63,9 @@ export async function retryDueFailedDeliveries(): Promise<{ attempted: number; s
 // Called from the webhook route right after a new inbound message is
 // processed for a conversation, so a previously-failed reply gets another
 // chance to go out as soon as the conversation is active again, rather than
-// waiting for the next cron tick. Only picks up deliveries already due
-// (nextRetryAt in the past) — it does not bypass the backoff schedule.
+// waiting for the next background sweep (src/instrumentation.ts). Only
+// picks up deliveries already due (nextRetryAt in the past) — it does not
+// bypass the backoff schedule.
 export async function retryDueFailedDeliveriesForConversation(conversationId: string): Promise<void> {
   const due = await prisma.messageDelivery.findMany({
     where: {

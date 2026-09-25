@@ -281,9 +281,10 @@ export async function POST(request: Request) {
     if (result.processed) {
       // Opportunistic retry: a reply that previously failed to send gets
       // another chance as soon as this conversation is active again,
-      // instead of waiting for the next /api/cron/retry-failed-deliveries
-      // tick. Runs before maybeAutoRespond() so an old queued reply doesn't
-      // land after a brand-new one for the same message.
+      // instead of waiting for the next background sweep
+      // (src/instrumentation.ts). Runs before maybeAutoRespond() so an old
+      // queued reply doesn't land after a brand-new one for the same
+      // message.
       after(() => retryDueFailedDeliveriesForConversation(result.conversationId));
       after(() => maybeAutoRespond(result.conversationId));
     }
