@@ -13,6 +13,7 @@ import {
 import { logOperation } from "@/lib/logging/logger";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { maybeAutoRespond } from "@/services/ai/auto-respond-service";
+import { retryDueFailedDeliveriesForConversation } from "@/services/ai/retry-service";
 import { processMessagingItem } from "@/services/instagram/webhook-processor";
 
 async function logWebhookError(message: string, details?: unknown) {
@@ -278,6 +279,12 @@ export async function POST(request: Request) {
     // Scheduled via `after()` so Gemini generation + the send call never
     // delay this webhook's own response back to SocialAPI.AI.
     if (result.processed) {
+      // Opportunistic retry: a reply that previously failed to send gets
+      // another chance as soon as this conversation is active again,
+      // instead of waiting for the next /api/cron/retry-failed-deliveries
+      // tick. Runs before maybeAutoRespond() so an old queued reply doesn't
+      // land after a brand-new one for the same message.
+      after(() => retryDueFailedDeliveriesForConversation(result.conversationId));
       after(() => maybeAutoRespond(result.conversationId));
     }
   } catch (error) {
@@ -297,6 +304,7 @@ export async function POST(request: Request) {
       operation: "instagram_webhook.completed",
       status: "failure",
       errorCode: "WEBHOOK_ERROR",
+      detail: message,
       durationMs: Date.now() - startedAt,
     });
   }

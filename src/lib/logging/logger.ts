@@ -25,6 +25,13 @@ export type LogFields = {
   status: "success" | "failure";
   durationMs?: number;
   errorCode?: string;
+  // Short, human-readable detail for a failure — e.g. an error's `.message`
+  // — so a failed operation is debuggable straight from the platform log
+  // tail (Vercel's `vercel logs` / dashboard) without a database lookup.
+  // Still no catch-all `metadata`: callers pass a string they've already
+  // extracted from a caught Error, never a raw request/response object,
+  // so there's no path for a secret to end up here by accident.
+  detail?: string;
   // Deliberately named fields, not a catch-all `metadata` — a caller must
   // explicitly choose to log a request/response body. Reserved for
   // SocialAPI.AI call logging; callers MUST redact secrets before passing

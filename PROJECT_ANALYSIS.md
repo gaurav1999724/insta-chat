@@ -691,15 +691,23 @@ delivery status`. The `ai-response` worker generates + validates (via
   be idempotent." Fixed by upserting the `Message`/`MessageDelivery` rows
   keyed on a synthetic placeholder derived from the `AIResponse` id, so a
   retry reuses the same row and just increments `attempts`.
-- **Workers run in-process:** `src/instrumentation.ts` → `register()` (a
-  Node-runtime-only hook, since BullMQ needs `net`/`tls`) starts all 3
-  workers once when the server boots — no separate worker process/command
-  to run. This is Next.js's own documented mechanism for this exact use
-  case.
-- Not implemented: rate limiting (spec §59's "rate limits allow it"
-  precondition — Phase 12), scheduled/periodic jobs of any kind (so
-  `refreshLongLivedToken()` still has no caller), and the `instagram-webhook`/
-  `retry`/`analytics` queues (see above).
+- **Long-running recovery scheduler:** `src/instrumentation.ts` → `register()`
+  starts a Node-runtime-only interval every 10 seconds. Each tick checks the
+  five most recently active conversations per active Instagram account and
+  auto-replies only when the latest message is inbound. A PostgreSQL advisory
+  lock prevents duplicate scans when more than one app instance is running.
+  The scheduler works without an open browser page and requires a persistent
+  Node process; it is not a serverless cron replacement.
+- **Trigger idempotency:** `AIResponse.triggerMessageId` is unique, so a
+  webhook-triggered response and a recovery-triggered response cannot both
+  be persisted for the same inbound message. Recovery ignores the
+  per-conversation `autoSend` preference by design, but still respects AI
+  disablement, human takeover, account status, rate limits, and the 24-hour
+  messaging window.
+- Not implemented: the `instagram-webhook`/`retry`/`analytics` queues (see
+  above). The checked-out source does not contain the BullMQ worker files
+  previously described in this section; the recovery scheduler is the active
+  periodic-processing mechanism.
 
 ## 9b. Human takeover completed: manual messaging (implemented Phase 10)
 

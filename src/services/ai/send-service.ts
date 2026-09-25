@@ -6,15 +6,14 @@ import {
   SEND_NOT_SUPPORTED_MESSAGE,
   isWithinMessagingWindow,
 } from "@/lib/instagram/send-eligibility";
+import { computeNextRetryAt, isRetryableSendError } from "@/lib/instagram/retry-policy";
 import { logOperation } from "@/lib/logging/logger";
 import { checkRateLimit, formatRetryAfter } from "@/lib/security/rate-limit";
 import { sendMessage } from "@/services/instagram/instagram-service";
 
-// Thrown for both "we chose not to attempt this" (not approved, window
-// closed) and "the API call failed" cases. Callers decide what to do with
-// it: manual server actions catch it and return a friendly
-// `{ success: false }` result.
-export class SendMessageError extends Error {}
+import { SendMessageError } from "@/services/ai/send-errors";
+
+export { SendMessageError } from "@/services/ai/send-errors";
 
 type ConversationWithAccount = Conversation & {
   instagramAccount: InstagramAccount;
@@ -53,11 +52,15 @@ async function callInstagramSend(
 
 export type SendMessageResult = { messageId: string };
 
-// Shared by the manual "Send" button (once a draft is APPROVED) and the
-// automatic `instagram-send` queue worker (Phase 9's auto-send path, spec
-// §59). Always creates a Message/MessageDelivery row before attempting the
-// network call, so even a failed attempt is tracked (spec §60) — not just
-// successful sends.
+// Shared by the manual "Send" button (once a draft is APPROVED), the
+// auto-send path (maybeAutoRespond()), and the automatic retry path
+// (src/services/ai/retry-service.ts) for a previously FAILED send of the
+// same draft. Always creates a Message/MessageDelivery row before
+// attempting the network call, so even a failed attempt is tracked (spec
+// §60) — not just successful sends. Safe to call again for the same
+// aiResponseId: the placeholder externalMessageId makes the Message/
+// MessageDelivery upserts reuse the existing rows and bump `attempts`
+// instead of creating duplicates.
 export async function sendApprovedDraft(
   aiResponseId: string,
   userId?: string,
@@ -79,7 +82,6 @@ export async function sendApprovedDraft(
   }
 
   const { conversation } = aiResponse;
-  await assertSendEligible(conversation);
 
   // Tracked before the network call so a failure still leaves a row (spec
   // §60 — never silently lose a send attempt), and so a repeated attempt
@@ -100,9 +102,14 @@ export async function sendApprovedDraft(
       text: aiResponse.text,
     },
   });
-  await prisma.messageDelivery.upsert({
+  const delivery = await prisma.messageDelivery.upsert({
     where: { messageId: message.id },
-    update: { status: "RETRYING", attempts: { increment: 1 }, lastAttemptAt: new Date() },
+    update: {
+      status: "RETRYING",
+      attempts: { increment: 1 },
+      lastAttemptAt: new Date(),
+      nextRetryAt: null,
+    },
     create: {
       messageId: message.id,
       status: "PENDING",
@@ -112,6 +119,12 @@ export async function sendApprovedDraft(
   });
 
   try {
+    // Checked inside the try (not before the delivery row exists) so that a
+    // closed messaging window / disconnected account is recorded and
+    // classified through the same failure path below — including marking
+    // it permanently non-retryable — instead of throwing before any of
+    // that bookkeeping happens.
+    await assertSendEligible(conversation);
     const result = await callInstagramSend(conversation, aiResponse.text);
 
     await prisma.$transaction([
@@ -155,12 +168,15 @@ export async function sendApprovedDraft(
     return { messageId: message.id };
   } catch (error) {
     const errorMessage =
-      error instanceof InstagramApiError ? error.message : "Failed to send the message.";
+      error instanceof InstagramApiError || error instanceof SendMessageError
+        ? error.message
+        : "Failed to send the message.";
+    const nextRetryAt = isRetryableSendError(error) ? computeNextRetryAt(delivery.attempts) : null;
 
     await prisma.$transaction([
       prisma.messageDelivery.update({
         where: { messageId: message.id },
-        data: { status: "FAILED", errorMessage },
+        data: { status: "FAILED", errorMessage, nextRetryAt },
       }),
       prisma.auditLog.create({
         data: {
@@ -192,6 +208,7 @@ export async function sendApprovedDraft(
       operation: "instagram.send_message",
       status: "failure",
       errorCode: "INSTAGRAM_API_ERROR",
+      detail: `${errorMessage} (attempt ${delivery.attempts}, ${nextRetryAt ? `retrying at ${nextRetryAt.toISOString()}` : "not retrying automatically"})`,
     });
 
     throw new SendMessageError(errorMessage);
@@ -337,6 +354,7 @@ export async function sendManualMessage(
       operation: "instagram.send_manual_message",
       status: "failure",
       errorCode: "INSTAGRAM_API_ERROR",
+      detail: errorMessage,
     });
 
     throw new SendMessageError(errorMessage);

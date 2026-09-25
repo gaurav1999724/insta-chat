@@ -23,6 +23,7 @@ const activeConversation = {
   humanTakeover: false,
   settings: { autoSend: true },
   instagramAccount: { userId: "user-1" },
+  messages: [{ id: "trigger-message-1", direction: "INBOUND" }],
 };
 
 describe("maybeAutoRespond", () => {
@@ -93,7 +94,11 @@ describe("maybeAutoRespond", () => {
       where: { userId: "user-1" },
       select: { autoSend: true },
     });
-    expect(createDraftReply).toHaveBeenCalledWith("conversation-1");
+    expect(createDraftReply).toHaveBeenCalledWith(
+      "conversation-1",
+      undefined,
+      "trigger-message-1",
+    );
   });
 
   it("does nothing when both the override and the global default are off", async () => {
@@ -120,7 +125,11 @@ describe("maybeAutoRespond", () => {
 
     await maybeAutoRespond("conversation-1");
 
-    expect(createDraftReply).toHaveBeenCalledWith("conversation-1");
+    expect(createDraftReply).toHaveBeenCalledWith(
+      "conversation-1",
+      undefined,
+      "trigger-message-1",
+    );
     expect(prismaMock.aIResponse.update).toHaveBeenCalledWith({
       where: { id: "ai-response-1" },
       data: { status: "APPROVED" },

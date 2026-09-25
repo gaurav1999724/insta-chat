@@ -3,6 +3,11 @@ import { logOperation } from "@/lib/logging/logger";
 import { createDraftReply } from "@/services/ai/draft-service";
 import { sendApprovedDraft } from "@/services/ai/send-service";
 
+export type AutoRespondOptions = {
+  ignoreAutoSendSetting?: boolean;
+  expectedTriggerMessageId?: string;
+};
+
 // "Auto-send": when enabled, an inbound message gets an AI reply generated
 // *and delivered* immediately, skipping the PENDING_APPROVAL → Approve →
 // Send flow the composer normally requires (spec: user explicitly asked
@@ -14,7 +19,10 @@ import { sendApprovedDraft } from "@/services/ai/send-service";
 // override) wins when set; `null` falls back to the user's
 // `AIConfiguration.autoSend` global default — same inherit semantics
 // every other per-conversation AI override already uses.
-export async function maybeAutoRespond(conversationId: string): Promise<void> {
+export async function maybeAutoRespond(
+  conversationId: string,
+  options: AutoRespondOptions = {},
+): Promise<void> {
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
     select: {
@@ -22,24 +30,39 @@ export async function maybeAutoRespond(conversationId: string): Promise<void> {
       humanTakeover: true,
       settings: { select: { autoSend: true } },
       instagramAccount: { select: { userId: true } },
+      messages: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { id: true, direction: true },
+      },
     },
   });
 
   if (!conversation || !conversation.aiEnabled || conversation.humanTakeover) return;
 
+  const latestMessage = conversation.messages[0];
+  if (
+    !latestMessage ||
+    latestMessage.direction !== "INBOUND" ||
+    (options.expectedTriggerMessageId &&
+      latestMessage.id !== options.expectedTriggerMessageId)
+  ) {
+    return;
+  }
+
   let autoSendEnabled = conversation.settings?.autoSend ?? null;
-  if (autoSendEnabled === null) {
+  if (!options.ignoreAutoSendSetting && autoSendEnabled === null) {
     const aiConfig = await prisma.aIConfiguration.findUnique({
       where: { userId: conversation.instagramAccount.userId },
       select: { autoSend: true },
     });
     autoSendEnabled = aiConfig?.autoSend ?? false;
   }
-  if (!autoSendEnabled) return;
+  if (!options.ignoreAutoSendSetting && !autoSendEnabled) return;
 
   // createDraftReply() already logs/records its own failures (GEMINI_ERROR,
   // rate limiting) — nothing more to do here if generation itself failed.
-  const draft = await createDraftReply(conversationId);
+  const draft = await createDraftReply(conversationId, undefined, latestMessage.id);
   if (!draft.success) return;
 
   try {
@@ -63,6 +86,7 @@ export async function maybeAutoRespond(conversationId: string): Promise<void> {
       operation: "ai.auto_respond",
       status: "failure",
       errorCode: "AUTO_SEND_ERROR",
+      detail: message,
     });
     // sendApprovedDraft() already records its own APIError/MessageDelivery
     // failure state — this is just an extra breadcrumb tying it to the

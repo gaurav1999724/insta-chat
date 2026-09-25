@@ -14,6 +14,7 @@ import { GeminiApiError } from "@/lib/gemini/errors";
 import { buildPrompt } from "@/lib/gemini/prompt-builder";
 import { validateAIResponse } from "@/lib/gemini/response-validator";
 import { getAIGenerationContext } from "@/lib/conversations/get-ai-context";
+import { logOperation } from "@/lib/logging/logger";
 
 // The only module that calls the Gemini SDK (PROJECT_ANALYSIS.md §7) —
 // never call @google/genai from a component, route handler, or action
@@ -172,53 +173,74 @@ export type GenerateResponseResult = {
 export async function generateResponse(
   conversationId: string,
 ): Promise<GenerateResponseResult> {
-  const context = await getAIGenerationContext(conversationId);
-  const conversationSummary = await summarizeConversation(conversationId);
-
-  const { systemInstruction, contents } = buildPrompt({
-    ...context,
-    conversationSummary,
-  });
-
-  if (contents.length === 0) {
-    throw new GeminiApiError("No conversation history to respond to.");
-  }
-
   const startedAt = Date.now();
-  const response = await callGemini(context.model, {
-    model: context.model,
-    contents,
-    config: { systemInstruction, temperature: context.temperature },
-  });
-  const durationMs = Date.now() - startedAt;
 
-  const text = response.text?.trim();
-  if (!text) {
-    throw new GeminiApiError(
-      "Gemini returned an empty response.",
-      response.promptFeedback,
-    );
+  try {
+    const context = await getAIGenerationContext(conversationId);
+    const conversationSummary = await summarizeConversation(conversationId);
+
+    const { systemInstruction, contents } = buildPrompt({
+      ...context,
+      conversationSummary,
+    });
+
+    if (contents.length === 0) {
+      throw new GeminiApiError("No conversation history to respond to.");
+    }
+
+    const response = await callGemini(context.model, {
+      model: context.model,
+      contents,
+      config: { systemInstruction, temperature: context.temperature },
+    });
+    const durationMs = Date.now() - startedAt;
+
+    const text = response.text?.trim();
+    if (!text) {
+      throw new GeminiApiError(
+        "Gemini returned an empty response.",
+        response.promptFeedback,
+      );
+    }
+
+    // spec §47: validate before this ever reaches the user.
+    const validation = validateAIResponse(text, context.language);
+    if (!validation.valid) {
+      throw new GeminiApiError(
+        `AI response failed validation: ${validation.detail}`,
+        validation,
+      );
+    }
+
+    logOperation({
+      conversationId,
+      operation: "ai.gemini_generate",
+      status: "success",
+      durationMs,
+      errorCode: `model_${context.model}`,
+    });
+
+    return {
+      text,
+      confidence: estimateConfidence(response.candidates?.[0]),
+      provider: "GEMINI",
+      model: context.model,
+      promptTokens: response.usageMetadata?.promptTokenCount ?? null,
+      completionTokens: response.usageMetadata?.candidatesTokenCount ?? null,
+      totalTokens: response.usageMetadata?.totalTokenCount ?? null,
+      durationMs,
+    };
+  } catch (error) {
+    logOperation({
+      conversationId,
+      operation: "ai.gemini_generate",
+      status: "failure",
+      durationMs: Date.now() - startedAt,
+      errorCode: "GEMINI_ERROR",
+      detail: error instanceof Error ? error.message : "Unknown Gemini error.",
+    });
+    throw error;
   }
-
-  // spec §47: validate before this ever reaches the user.
-  const validation = validateAIResponse(text, context.language);
-  if (!validation.valid) {
-    throw new GeminiApiError(
-      `AI response failed validation: ${validation.detail}`,
-      validation,
-    );
-  }
-
-  return {
-    text,
-    confidence: estimateConfidence(response.candidates?.[0]),
-    provider: "GEMINI",
-    model: context.model,
-    promptTokens: response.usageMetadata?.promptTokenCount ?? null,
-    completionTokens: response.usageMetadata?.candidatesTokenCount ?? null,
-    totalTokens: response.usageMetadata?.totalTokenCount ?? null,
-    durationMs,
-  };
 }
 
 function parseJsonResponse(text: string | undefined, context: string): unknown {

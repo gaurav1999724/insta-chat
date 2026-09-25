@@ -1,4 +1,4 @@
-import type { ErrorCategory } from "@prisma/client";
+import { Prisma, type ErrorCategory } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { GeminiApiError } from "@/lib/gemini/errors";
@@ -28,6 +28,7 @@ export type CreateDraftResult =
 export async function createDraftReply(
   conversationId: string,
   userId?: string,
+  triggerMessageId?: string,
 ): Promise<CreateDraftResult> {
   // spec §50: rate limit AI generation. Keyed per conversation (not per
   // user) since that's the one scope both the manual "AI Generate" button
@@ -45,18 +46,27 @@ export async function createDraftReply(
       operation: "ai.generate_response",
       status: "failure",
       errorCode: "RATE_LIMIT_ERROR",
+      detail: message,
     });
     return { success: false, error: message };
   }
 
   try {
-    const result = await generateReply(conversationId);
-
     const triggerMessage = await prisma.message.findFirst({
-      where: { conversationId, direction: "INBOUND" },
+      where: {
+        conversationId,
+        direction: "INBOUND",
+        ...(triggerMessageId ? { id: triggerMessageId } : {}),
+      },
       orderBy: { createdAt: "desc" },
       select: { id: true },
     });
+
+    if (!triggerMessage || (triggerMessageId && triggerMessage.id !== triggerMessageId)) {
+      return { success: false, error: "The conversation has no eligible inbound message." };
+    }
+
+    const result = await generateReply(conversationId);
 
     const aiResponse = await prisma.aIResponse.create({
       data: {
@@ -120,6 +130,10 @@ export async function createDraftReply(
       provider: result.provider,
     };
   } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return { success: false, error: "This inbound message already has a reply." };
+    }
+
     const message =
       error instanceof GeminiApiError || error instanceof OpenAIApiError
         ? error.message
@@ -153,6 +167,7 @@ export async function createDraftReply(
       operation: "ai.generate_response",
       status: "failure",
       errorCode: category,
+      detail: error instanceof Error ? error.message : message,
     });
 
     return { success: false, error: message };

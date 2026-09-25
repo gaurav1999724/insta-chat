@@ -438,6 +438,7 @@ model AIResponse {
   usage          AIUsage?
 
   @@index([conversationId])
+  @@unique([triggerMessageId])
 }
 
 model AIUsage {
@@ -481,6 +482,12 @@ model MessageDelivery {
   status        DeliveryStatus @default(PENDING)
   attempts      Int            @default(0)
   lastAttemptAt DateTime?
+  // Set only on a FAILED delivery that's still eligible for an automatic
+  // retry (transient error, attempts < MAX_SEND_ATTEMPTS); null means "don't
+  // retry this automatically" — either it exhausted its attempts or the
+  // failure was permanent (e.g. messaging window closed, account
+  // disconnected). See src/lib/instagram/retry-policy.ts.
+  nextRetryAt   DateTime?
   deliveredAt   DateTime?
   errorCode     String?
   errorMessage  String?        @db.Text
@@ -488,6 +495,8 @@ model MessageDelivery {
   updatedAt     DateTime       @updatedAt
 
   message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextRetryAt])
 }
 
 // --- Audit / system / errors ---

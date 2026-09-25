@@ -1,6 +1,7 @@
 import type { AIProvider } from "@prisma/client";
 
 import { getAIGenerationContext } from "@/lib/conversations/get-ai-context";
+import { logOperation } from "@/lib/logging/logger";
 import { generateResponse as generateGeminiResponse } from "@/services/gemini/gemini-service";
 import { generateResponseWithOpenAI } from "@/services/openai/openai-service";
 
@@ -18,9 +19,28 @@ export async function generateReply(conversationId: string) {
   try {
     return await generateGeminiResponse(conversationId);
   } catch (geminiError) {
+    // Logged here (not just the combined message on total failure below) so
+    // a Gemini outage that OpenAI successfully covers for is still visible
+    // in the log tail — otherwise a silently-recovered failure never shows
+    // up anywhere.
+    logOperation({
+      conversationId,
+      operation: "ai.generate_reply.gemini_failed",
+      status: "failure",
+      errorCode: "GEMINI_ERROR",
+      detail: `${getErrorMessage(geminiError)} — falling back to ChatGPT`,
+    });
+
     try {
       return await generateResponseWithOpenAI(conversationId);
     } catch (openAIError) {
+      logOperation({
+        conversationId,
+        operation: "ai.generate_reply.openai_fallback_failed",
+        status: "failure",
+        errorCode: "OPENAI_ERROR",
+        detail: getErrorMessage(openAIError),
+      });
       throw new Error(
         `Gemini failed: ${getErrorMessage(geminiError)} ChatGPT fallback failed: ${getErrorMessage(openAIError)}`,
       );

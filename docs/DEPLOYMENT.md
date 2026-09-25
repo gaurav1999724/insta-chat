@@ -115,12 +115,11 @@ committed).
 ## What's NOT covered by this doc
 
 - A managed-hosting-specific guide (Vercel, Railway, Fly.io, etc.) — this
-  app's Phase 9 automatic-processing design (in-process BullMQ workers
-  started via `src/instrumentation.ts`, not a separate worker dyno/process)
-  assumes a **long-running Node process**, which rules out Vercel's
-  serverless functions for anything beyond the manual-button-only mode.
-  A container platform (this Dockerfile) or a persistent Node host is the
-  right target, not a serverless one.
+  app's automatic-processing design (including the 10-second unanswered-reply
+  recovery loop started via `src/instrumentation.ts`) assumes a **long-running
+  Node process**, which rules out Vercel's serverless functions for this
+  feature. A container platform (this Dockerfile) or a persistent Node host is
+  the right target, not a serverless one.
 - TLS/reverse-proxy termination — put this app behind whatever
   already-trusted reverse proxy/load balancer terminates HTTPS in your
   environment (nginx, Caddy, a cloud load balancer); this app's own server
