@@ -1,5 +1,4 @@
 import { env } from "@/lib/validation/env";
-import { getSystemConfig } from "@/lib/config/system-config";
 import { InstagramApiError } from "@/lib/instagram/errors";
 import { logOperation } from "@/lib/logging/logger";
 
@@ -16,20 +15,19 @@ const BASE_URL = "https://api.social-api.ai/v1";
 
 export const INSTAGRAM_CALLBACK_PATH = "/api/instagram/callback";
 
-async function requireToken(): Promise<string> {
-  const token = await getSystemConfig("SOCIALAPI_TOKEN");
-  if (!token) {
+function requireToken(): string {
+  if (!env.SOCIALAPI_TOKEN) {
     throw new InstagramApiError(
       "Instagram connection is not configured on this server.",
       "INSTAGRAM_AUTH_ERROR",
     );
   }
-  return token;
+  return env.SOCIALAPI_TOKEN;
 }
 
-async function authHeaders(): Promise<HeadersInit> {
+function authHeaders(): HeadersInit {
   return {
-    Authorization: `Bearer ${await requireToken()}`,
+    Authorization: `Bearer ${requireToken()}`,
     "Content-Type": "application/json",
   };
 }
@@ -70,7 +68,7 @@ async function callSocialApi(
 
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
-    headers: await authHeaders(),
+    headers: authHeaders(),
     body: init.body ? JSON.stringify(init.body) : undefined,
   });
   const json = await response.json().catch(() => null);

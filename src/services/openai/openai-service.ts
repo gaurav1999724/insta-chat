@@ -1,7 +1,6 @@
 import OpenAI from "openai";
 
 import { env } from "@/lib/validation/env";
-import { getSystemConfig } from "@/lib/config/system-config";
 import { buildConversationContents, buildSystemInstruction } from "@/lib/gemini/prompt-builder";
 import { validateAIResponse } from "@/lib/gemini/response-validator";
 import { getAIGenerationContext } from "@/lib/conversations/get-ai-context";
@@ -17,12 +16,11 @@ export class OpenAIApiError extends Error {
   }
 }
 
-async function getClient(): Promise<OpenAI> {
-  const apiKey = await getSystemConfig("OPENAI_API_KEY");
-  if (!apiKey) {
+function getClient(): OpenAI {
+  if (!env.OPENAI_API_KEY) {
     throw new OpenAIApiError("ChatGPT is not configured on this server (missing OPENAI_API_KEY).");
   }
-  return new OpenAI({ apiKey });
+  return new OpenAI({ apiKey: env.OPENAI_API_KEY });
 }
 
 export async function generateResponseWithOpenAI(conversationId: string) {
@@ -36,7 +34,7 @@ export async function generateResponseWithOpenAI(conversationId: string) {
       throw new OpenAIApiError("No conversation history to respond to.");
     }
 
-    const client = await getClient();
+    const client = getClient();
     const response = await client.chat.completions.create({
       model: env.OPENAI_MODEL,
       temperature: context.temperature,

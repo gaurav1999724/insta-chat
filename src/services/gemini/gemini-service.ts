@@ -9,7 +9,6 @@ import { z } from "zod";
 
 import { prisma } from "@/lib/db/prisma";
 import { env } from "@/lib/validation/env";
-import { getSystemConfig } from "@/lib/config/system-config";
 import { GeminiApiError } from "@/lib/gemini/errors";
 import { buildPrompt } from "@/lib/gemini/prompt-builder";
 import { validateAIResponse } from "@/lib/gemini/response-validator";
@@ -20,14 +19,13 @@ import { logOperation } from "@/lib/logging/logger";
 // never call @google/genai from a component, route handler, or action
 // directly.
 
-async function getClient(): Promise<GoogleGenAI> {
-  const apiKey = await getSystemConfig("GEMINI_API_KEY");
-  if (!apiKey) {
+function getClient(): GoogleGenAI {
+  if (!env.GEMINI_API_KEY) {
     throw new GeminiApiError(
       "Gemini is not configured on this server (missing GEMINI_API_KEY).",
     );
   }
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
 }
 
 const RETRYABLE_ATTEMPTS = 3;
@@ -52,8 +50,7 @@ async function callGemini(
   let lastError: unknown;
   for (let attempt = 0; attempt < RETRYABLE_ATTEMPTS; attempt++) {
     try {
-      const client = await getClient();
-      return await client.models.generateContent(prompt);
+      return await getClient().models.generateContent(prompt);
     } catch (error) {
       lastError = error;
       if (!isRetryableGeminiError(error) || attempt === RETRYABLE_ATTEMPTS - 1) {

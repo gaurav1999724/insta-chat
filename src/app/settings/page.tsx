@@ -6,14 +6,12 @@ import {
   Gauge,
   AlertTriangle,
   Camera,
-  KeyRound,
 } from "lucide-react";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { AISettingsForm } from "@/components/settings/ai-settings-form";
 import { ChatModeManager } from "@/components/settings/chat-mode-manager";
 import { RecentErrorsPanel } from "@/components/settings/recent-errors";
-import { SystemConfigForm } from "@/components/settings/system-config-form";
 import { UsageSummaryPanel } from "@/components/settings/usage-summary";
 import { adoptConnectedAccount, disconnectInstagramAccount } from "./actions";
 import { Button } from "@/components/ui/button";
@@ -26,7 +24,6 @@ import {
 } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth/require-user";
 import { getOrCreateAIConfiguration } from "@/lib/ai/get-ai-configuration";
-import { getSystemConfigStatus } from "@/lib/config/system-config";
 import { getRecentErrors } from "@/lib/analytics/get-recent-errors";
 import { getUsageSummary } from "@/lib/analytics/get-usage-summary";
 import { prisma } from "@/lib/db/prisma";
@@ -93,15 +90,7 @@ export default async function SettingsPage({
   const user = await requireUser();
   const { instagram: instagramStatus } = await searchParams;
 
-  const [
-    config,
-    chatModes,
-    customChatModes,
-    instagramAccount,
-    usageSummary,
-    recentErrors,
-    systemConfigStatus,
-  ] =
+  const [config, chatModes, customChatModes, instagramAccount, usageSummary, recentErrors] =
     await Promise.all([
       getOrCreateAIConfiguration(user.id),
       prisma.chatMode.findMany({
@@ -121,7 +110,6 @@ export default async function SettingsPage({
       }),
       getUsageSummary(user.id),
       getRecentErrors(user.id),
-      getSystemConfigStatus(),
     ]);
 
   const banner = instagramStatus ? CONNECT_BANNER[instagramStatus] : undefined;
@@ -284,23 +272,6 @@ export default async function SettingsPage({
               }}
               chatModes={chatModes}
             />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <KeyRound className="size-4" />
-              Integration credentials
-            </CardTitle>
-            <CardDescription>
-              Stored in the database and read live on every request — updating these here
-              takes effect immediately, no redeploy needed. Applies app-wide, to every user
-              of this deployment.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <SystemConfigForm status={systemConfigStatus} />
           </CardContent>
         </Card>
 

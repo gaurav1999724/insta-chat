@@ -4,10 +4,8 @@ import { revalidatePath } from "next/cache";
 
 import { requireUser } from "@/lib/auth/require-user";
 import { prisma } from "@/lib/db/prisma";
-import { setSystemConfig, type SystemConfigKey } from "@/lib/config/system-config";
 import { aiConfigurationFormSchema } from "@/lib/validation/ai-configuration";
 import { chatModeFormSchema, generateChatModeKey } from "@/lib/validation/chat-mode";
-import { systemConfigFormSchema } from "@/lib/validation/system-config";
 import {
   disconnectSocialAccount,
   listConnectedAccounts,
@@ -46,42 +44,6 @@ export async function updateAIConfiguration(values: unknown): Promise<ActionResu
     where: { userId: user.id },
     update: parsed.data,
     create: { userId: user.id, ...parsed.data },
-  });
-
-  revalidatePath("/settings");
-  return { success: true };
-}
-
-// These are app-wide, not per-user (SocialAPI.AI's token/webhook secret and
-// the Gemini/OpenAI API keys are already shared across every user of this
-// deployment via env vars today — saving one here changes it for everyone,
-// same blast radius as editing .env and redeploying, just without the
-// redeploy). Blank fields are left untouched; only a non-empty value
-// overwrites its `SystemSetting` row.
-export async function updateSystemConfig(values: unknown): Promise<ActionResult> {
-  const user = await requireUser();
-
-  const parsed = systemConfigFormSchema.safeParse(values);
-  if (!parsed.success) {
-    return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input" };
-  }
-
-  const changedKeys = Object.entries(parsed.data).filter(
-    (entry): entry is [SystemConfigKey, string] => entry[1].length > 0,
-  );
-  if (changedKeys.length === 0) {
-    return { success: true };
-  }
-
-  await Promise.all(changedKeys.map(([key, value]) => setSystemConfig(key, value)));
-
-  await prisma.auditLog.create({
-    data: {
-      userId: user.id,
-      action: "SETTINGS_CHANGED",
-      entityType: "SystemSetting",
-      metadata: { keys: changedKeys.map(([key]) => key) },
-    },
   });
 
   revalidatePath("/settings");

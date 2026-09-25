@@ -58,7 +58,7 @@ export async function POST(request: Request) {
   const timestamp = request.headers.get("x-socialapi-timestamp");
   const signature = request.headers.get("x-socialapi-signature-v2");
 
-  if (!(await isValidWebhookSignature(rawBody, timestamp, signature))) {
+  if (!isValidWebhookSignature(rawBody, timestamp, signature)) {
     logOperation({
       requestId,
       operation: "instagram_webhook.signature_validation",
