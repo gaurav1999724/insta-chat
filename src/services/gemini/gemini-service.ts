@@ -43,6 +43,51 @@ function isRetryableGeminiError(error: unknown): boolean {
   return error instanceof Error && error.name === "ServerError";
 }
 
+// A quota/rate-limit 429 is a "ClientError" per the split above, but unlike
+// a genuinely bad request (bad key, malformed prompt) it isn't a bug —
+// confirmed in production 2026-09-25 hitting the free tier's
+// GenerateRequestsPerDayPerProjectPerModel quota (20/day). Checked by
+// message content, not `error.name`: callGemini() always rewraps whatever
+// it throws in a GeminiApiError (name "GeminiApiError"), carrying the
+// original message through unchanged — this runs on that wrapped error, not
+// the raw SDK one. Detected separately from isRetryableGeminiError so
+// callGemini() never burns its 3 attempts retrying it, and so
+// generateResponse() can start a cooldown instead (see below) rather than
+// hitting the same 429 on every reply.
+function isQuotaExceededError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes("RESOURCE_EXHAUSTED") || error.message.includes('"code":429'))
+  );
+}
+
+// Circuit breaker: once Gemini reports its quota is exhausted, every further
+// call within the same window would just hit the same 429 — so stop calling
+// Gemini at all for a while instead of paying for a network round trip (and
+// a failure log) on every single reply. Deliberately not an attempt to
+// model Google's actual per-minute/per-day reset schedule (the API's own
+// suggested `retryDelay` is for its own internal per-minute bucket, not the
+// per-day quota this project actually hit); this is just a pragmatic pause
+// before trying Gemini again, using the generic SystemSetting table as a
+// shared marker (its `value` holds the cooldown's expiry as an ISO string).
+const QUOTA_COOLDOWN_KEY = "GEMINI_QUOTA_COOLDOWN_UNTIL";
+const QUOTA_COOLDOWN_MS = 30 * 60_000;
+
+async function getActiveQuotaCooldownUntil(): Promise<Date | null> {
+  const row = await prisma.systemSetting.findUnique({ where: { key: QUOTA_COOLDOWN_KEY } });
+  const until = typeof row?.value === "string" ? new Date(row.value) : null;
+  return until && !Number.isNaN(until.getTime()) && until.getTime() > Date.now() ? until : null;
+}
+
+async function startQuotaCooldown(): Promise<void> {
+  const until = new Date(Date.now() + QUOTA_COOLDOWN_MS).toISOString();
+  await prisma.systemSetting.upsert({
+    where: { key: QUOTA_COOLDOWN_KEY },
+    update: { value: until },
+    create: { key: QUOTA_COOLDOWN_KEY, value: until },
+  });
+}
+
 async function callGemini(
   model: string,
   prompt: Parameters<GoogleGenAI["models"]["generateContent"]>[0],
@@ -173,6 +218,14 @@ export async function generateResponse(
   const startedAt = Date.now();
 
   try {
+    const cooldownUntil = await getActiveQuotaCooldownUntil();
+    if (cooldownUntil) {
+      throw new GeminiApiError(
+        `Gemini is paused after hitting its quota limit; resuming automatically at ${cooldownUntil.toISOString()}.`,
+        { quotaCooldown: true },
+      );
+    }
+
     const context = await getAIGenerationContext(conversationId);
     const conversationSummary = await summarizeConversation(conversationId);
 
@@ -228,12 +281,27 @@ export async function generateResponse(
       durationMs,
     };
   } catch (error) {
+    const inCooldown =
+      error instanceof GeminiApiError &&
+      typeof error.details === "object" &&
+      error.details !== null &&
+      (error.details as { quotaCooldown?: boolean }).quotaCooldown === true;
+    const quotaExceeded = !inCooldown && isQuotaExceededError(error);
+
+    if (quotaExceeded) {
+      await startQuotaCooldown();
+    }
+
     logOperation({
       conversationId,
       operation: "ai.gemini_generate",
       status: "failure",
       durationMs: Date.now() - startedAt,
-      errorCode: "GEMINI_ERROR",
+      errorCode: inCooldown
+        ? "GEMINI_QUOTA_COOLDOWN"
+        : quotaExceeded
+          ? "GEMINI_QUOTA_EXCEEDED"
+          : "GEMINI_ERROR",
       detail: error instanceof Error ? error.message : "Unknown Gemini error.",
     });
     throw error;

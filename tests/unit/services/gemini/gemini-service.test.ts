@@ -22,6 +22,7 @@ const { prismaMock } = vi.hoisted(() => ({
   prismaMock: {
     message: { findMany: vi.fn() },
     conversationSummary: { create: vi.fn() },
+    systemSetting: { findUnique: vi.fn(), upsert: vi.fn() },
   },
 }));
 vi.mock("@/lib/db/prisma", () => ({ prisma: prismaMock }));
@@ -132,6 +133,32 @@ describe("generateResponse", () => {
     generateContentMock.mockRejectedValue(new Error("503 Service Unavailable"));
 
     await expect(generateResponse("conversation-1")).rejects.toThrow(GeminiApiError);
+  });
+
+  it("starts a quota cooldown when Gemini reports RESOURCE_EXHAUSTED, without retrying", async () => {
+    prismaMock.systemSetting.findUnique.mockResolvedValue(null);
+    const quotaError = Object.assign(new Error('{"error":{"status":"RESOURCE_EXHAUSTED"}}'), {
+      name: "ClientError",
+    });
+    generateContentMock.mockRejectedValue(quotaError);
+
+    await expect(generateResponse("conversation-1")).rejects.toThrow(GeminiApiError);
+
+    expect(generateContentMock).toHaveBeenCalledTimes(1); // not retried like a 5xx
+    expect(prismaMock.systemSetting.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { key: "GEMINI_QUOTA_COOLDOWN_UNTIL" } }),
+    );
+  });
+
+  it("skips calling Gemini entirely while a quota cooldown is active", async () => {
+    prismaMock.systemSetting.findUnique.mockResolvedValue({
+      value: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    await expect(generateResponse("conversation-1")).rejects.toThrow(/paused after hitting/);
+
+    expect(generateContentMock).not.toHaveBeenCalled();
+    expect(prismaMock.systemSetting.upsert).not.toHaveBeenCalled();
   });
 });
 
